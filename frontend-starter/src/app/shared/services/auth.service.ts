@@ -18,6 +18,28 @@ export class AuthService {
       .pipe(tap((response) => this.storeAuthentication(response)));
   }
 
+  magicRequest(email: string) {
+    return this.http.post<{ message: string }>('/api/auth/magic/request', { email });
+  }
+
+  magicVerify(token: string) {
+    return this.http.post<AuthResponse>('/api/auth/magic/verify', { token })
+      .pipe(tap(response => this.storeAuthentication(response)));
+  }
+
+  googleConfig() {
+    return this.http.get<{ clientId: string | null }>('/api/auth/google/config');
+  }
+
+  googleLogin(credential: string) {
+    return this.http.post<AuthResponse>('/api/auth/google', { credential })
+      .pipe(tap(response => this.storeAuthentication(response)));
+  }
+
+  googleLink(credential: string) {
+    return this.http.post<{ user: User }>('/api/auth/google/link', { credential });
+  }
+
   register(name: string, email: string, password: string) {
     return this.http
       .post<AuthResponse>('/api/auth/register', { name, email, password })

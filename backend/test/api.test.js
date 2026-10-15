@@ -41,3 +41,28 @@ test("schémas Mongoose et relation", () => {
   assert.equal(t.title, "Blues");
   assert.equal(Track.schema.path("ownerId").options.ref, "User");
 });
+
+
+test("configuration Google publique sans secret", async () => {
+  const r = await fetch(base + "/api/auth/google/config");
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.ok(body.clientId === null || typeof body.clientId === "string");
+  assert.deepEqual(Object.keys(body), ["clientId"]);
+});
+
+test("lien magique mal formé rejeté sans accès MongoDB", async () => {
+  const r = await fetch(base + "/api/auth/magic/verify", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: "invalid" }),
+  });
+  assert.equal(r.status, 400);
+});
+
+test("adresse email invalide rejetée pour Magic Link", async () => {
+  const r = await fetch(base + "/api/auth/magic/request", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "invalid" }),
+  });
+  assert.equal(r.status, 400);
+});

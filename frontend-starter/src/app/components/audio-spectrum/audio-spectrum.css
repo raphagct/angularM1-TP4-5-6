@@ -1,0 +1,3 @@
+:host { display: block; }
+canvas { display: block; width: 100%; height: 100px; margin-bottom: 0.75rem; border-radius: 8px; background: #092e25; }
+audio { display: block; width: 100%; }

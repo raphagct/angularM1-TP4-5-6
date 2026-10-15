@@ -16,7 +16,8 @@ const schema = new mongoose.Schema(
       trim: true,
     },
     // select:false empêche de renvoyer le hash par défaut dans les requêtes.
-    passwordHash: { type: String, required: true, select: false },
+    passwordHash: { type: String, select: false },
+    googleSub: { type: String, unique: true, sparse: true, select: false },
   },
   { timestamps: true },
 );

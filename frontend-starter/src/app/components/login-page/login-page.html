@@ -16,5 +16,10 @@
   @if (error()) {
     <p class="error">{{ error() }}</p>
   }
+  <div class="alternate-auth">
+    <button type="button" (click)="requestMagic()" [disabled]="form.controls.email.invalid || magicLoading()">Recevoir un lien de connexion</button>
+    @if (magicMessage()) { <p role="status">{{ magicMessage() }}</p> }
+    <div id="google-signin" aria-label="Connexion avec Google"></div>
+  </div>
   <p><a routerLink="/register">Créer un compte</a></p>
 </section>

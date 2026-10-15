@@ -60,3 +60,11 @@ les logs et les tests.
 Les fichiers audio présents dans `frontend-starter/fichiers-audio-de-test/` sont
 des fixtures fournies pour les essais. Aucun fichier uploadé, dossier de
 dépendances (`node_modules`), fichier `.env` ou identifiant local n’est inclus.
+
+## Connexion et enrichissement des pistes
+
+Le backend accepte les connexions existantes par mot de passe. Les nouvelles options nécessitent les variables de `backend/.env.example` : `SMTP_*` pour les liens de connexion et `GOOGLE_CLIENT_ID` pour Google Identity Services. Le domaine local `http://localhost:4200` doit être autorisé dans la configuration du client Google. Définir également `JWT_SECRET` avec une valeur longue et aléatoire ; sans cela, une clé temporaire est créée et les sessions expirent au redémarrage. Le fichier `.env` reste privé. Redémarrer le backend après avoir configuré ces valeurs.
+
+Un lien email est valable 10 minutes et une seule fois, pour un compte déjà créé. Si un compte possède déjà un mot de passe, se connecter puis associer Google depuis le profil avant d’utiliser ce bouton pour la connexion. Les fichiers audio locaux peuvent fournir artiste, album, durée et pochette. Le graphique des fréquences apparaît pendant la lecture d’une piste locale.
+
+Spotify et YouTube ne permettent pas de copier leurs fichiers audio via leurs API usuelles. Les accès Deezer et SoundCloud ne fournissent pas ici une route de téléchargement documentée et configurée pour un import fiable ; aucune recherche externe ne suggère donc à tort un import possible. Un fichier obtenu avec les droits nécessaires peut être importé avec le formulaire existant.

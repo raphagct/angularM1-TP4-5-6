@@ -58,3 +58,5 @@
 @media (max-width: 420px) {
   .track { align-items: flex-start; flex-direction: column; }
 }
+
+.cover { width: 64px; height: 64px; flex: none; border-radius: 8px; object-fit: cover; }

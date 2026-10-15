@@ -4,11 +4,12 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { HttpEventType, HttpErrorResponse } from '@angular/common/http';
+import { AudioSpectrumComponent } from '../audio-spectrum/audio-spectrum';
 import { Track } from '../../shared/models/track.model';
 import { TrackService } from '../../shared/services/track.service';
 
 @Component({
-  imports: [ReactiveFormsModule, MatPaginatorModule, MatSnackBarModule, DatePipe, DecimalPipe],
+  imports: [ReactiveFormsModule, MatPaginatorModule, MatSnackBarModule, DatePipe, DecimalPipe, AudioSpectrumComponent],
   templateUrl: './tracks-page.html', 
   styleUrl: './tracks-page.css',
 })
@@ -18,6 +19,7 @@ export class TracksPageComponent {
   private readonly snackBar = inject(MatSnackBar);
 
   readonly tracks = signal<Track[]>([]);
+  readonly coverUrls = signal<Record<string, string>>({});
   readonly page = signal(1);
   readonly total = signal(0);
   readonly limit = signal(5);
@@ -42,6 +44,7 @@ export class TracksPageComponent {
     this.load();
     this.destroyRef.onDestroy(() => {
       if (this.audioUrl()) URL.revokeObjectURL(this.audioUrl());
+      Object.values(this.coverUrls()).forEach(url => URL.revokeObjectURL(url));
     });
   }
 
@@ -81,7 +84,18 @@ export class TracksPageComponent {
           this.load();
           return;
         }
+        Object.values(this.coverUrls()).forEach(url => URL.revokeObjectURL(url));
+        this.coverUrls.set({});
         this.tracks.set(response.items);
+        for (const track of response.items.filter(item => item.hasCover)) {
+          this.service.cover(track.id).subscribe({
+            next: blob => {
+              if (!this.tracks().some(item => item.id === track.id)) return;
+              this.coverUrls.update(urls => ({ ...urls, [track.id]: URL.createObjectURL(blob) }));
+            },
+            error: () => console.warn('[TracksPage] Pochette indisponible', track.id),
+          });
+        }
         this.total.set(response.total);
         this.loading.set(false);
       },
@@ -115,7 +129,7 @@ export class TracksPageComponent {
     this.uploadProgress.set(0);
     this.ghostFile.set(this.file);
 
-    this.service.upload(this.file, this.title.value || this.file.name).subscribe({
+    this.service.upload(this.file, this.title.value).subscribe({
       next: (event) => {
         if (event.type === HttpEventType.UploadProgress) {
           if (event.total) {
@@ -141,6 +155,12 @@ export class TracksPageComponent {
         this.ghostFile.set(null);
       },
     });
+  }
+
+  durationLabel(seconds: number): string {
+    const minutes = Math.floor(seconds / 60);
+    const remaining = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${minutes}:${remaining}`;
   }
 
   play(track: Track): void {

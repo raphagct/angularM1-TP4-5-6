@@ -25,6 +25,10 @@ export class TrackService {
     });
   }
 
+  cover(id: string) {
+    return this.http.get(`/api/tracks/${id}/cover`, { responseType: 'blob' });
+  }
+
   audio(id: string) {
     return this.http.get(`/api/tracks/${id}/audio`, {
       responseType: 'blob',

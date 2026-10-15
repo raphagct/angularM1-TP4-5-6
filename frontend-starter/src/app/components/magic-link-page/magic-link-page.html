@@ -1,0 +1,9 @@
+<section class="card">
+  <h1>Connexion par lien</h1>
+  @if (error()) {
+    <p class="error" role="alert">{{ error() }}</p>
+    <a routerLink="/login">Demander un nouveau lien</a>
+  } @else {
+    <p role="status">Validation du lien en cours…</p>
+  }
+</section>

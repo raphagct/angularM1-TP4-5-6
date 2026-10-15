@@ -1,0 +1,2 @@
+<canvas #canvas width="576" height="100" role="img" [attr.aria-label]="'Spectre des fréquences de ' + title()"></canvas>
+<audio #audio [src]="src()" controls (play)="onPlay()" (pause)="onPause()" (ended)="onPause()"></audio>

@@ -9,5 +9,11 @@
       <label>Nouveau nom<input formControlName="name" /></label>
       <button type="submit">Enregistrer</button>
     </form>
+    <div class="google-link">
+      <h2>Connexion Google</h2>
+      <p>Associez un compte Google utilisant la même adresse email.</p>
+      <div id="google-link"></div>
+      @if (googleMessage()) { <p role="status">{{ googleMessage() }}</p> }
+    </div>
   }
 </section>

@@ -51,4 +51,35 @@ describe('AuthService', () => {
     expect(service.token()).toBe('fake-jwt-token');
     expect(service.currentUser()).toEqual(user);
   });
+  it('demande un Magic Link sans exposer de token', () => {
+    let message = '';
+    service.magicRequest('test@example.com').subscribe(result => message = result.message);
+    const req = httpTesting.expectOne('/api/auth/magic/request');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ email: 'test@example.com' });
+    req.flush({ message: 'Lien envoyé' });
+    expect(message).toBe('Lien envoyé');
+  });
+
+  it('échange un Magic Link contre une session', () => {
+    const user = { id: '1', name: 'Test', email: 'test@example.com', createdAt: '2026-01-01' };
+    service.magicVerify('fake-link').subscribe();
+    const req = httpTesting.expectOne('/api/auth/magic/verify');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ token: 'fake-link' });
+    req.flush({ token: 'fake-jwt', user });
+    expect(service.token()).toBe('fake-jwt');
+    expect(service.currentUser()).toEqual(user);
+  });
+
+  it('envoie le jeton Google au backend et conserve la session vérifiée', () => {
+    const user = { id: '2', name: 'Google', email: 'google@example.com', createdAt: '2026-01-01' };
+    service.googleLogin('id-token').subscribe();
+    const req = httpTesting.expectOne('/api/auth/google');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ credential: 'id-token' });
+    req.flush({ token: 'app-jwt', user });
+    expect(service.currentUser()).toEqual(user);
+    expect(service.token()).toBe('app-jwt');
+  });
 });

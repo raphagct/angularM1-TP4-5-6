@@ -52,9 +52,15 @@
 
       @for (track of tracks(); track track.id) {
         <div class="track card-track">
+          @if (coverUrls()[track.id]; as coverUrl) {
+            <img class="cover" [src]="coverUrl" [alt]="'Pochette de ' + track.title" />
+          }
           <div class="track-info">
             <b>{{ track.title }}</b>
-            <small>{{ track.originalName }}</small>
+            @if (track.artist || track.album) {
+              <small>{{ track.artist }} @if (track.album) { · {{ track.album }} }</small>
+            }
+            <small>{{ track.originalName }} @if (track.duration !== undefined) { · {{ durationLabel(track.duration) }} }</small>
             <small class="meta">{{ track.mimeType }} · {{ track.size / 1024 | number:'1.0-0' }} Ko · Ajouté le {{ track.createdAt | date:'shortDate' }}</small>
           </div>
           <div style="display: flex; gap: 8px;">
@@ -86,7 +92,7 @@
       @if (audioUrl()) {
         <div class="player">
           <p>En cours de lecture : <b>{{ currentTrack()?.title }}</b></p>
-          <audio [src]="audioUrl()" controls autoplay></audio>
+          <app-audio-spectrum [src]="audioUrl()" [title]="currentTrack()?.title || 'Piste'" />
         </div>
       }
     </article>

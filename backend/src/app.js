@@ -6,17 +6,21 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { parseFile } from "music-metadata";
 import { User } from "./models/User.js";
 import { Track } from "./models/Track.js";
+import { registerAlternateAuth } from "./auth/alternate-auth.js";
 
 // Les fichiers audio restent sur le disque du serveur dans ce TP.
 // MongoDB ne conserve que leurs métadonnées : titre, nom, taille, etc.
 const UPLOADS = path.resolve("data/uploads");
+const COVERS = path.resolve("data/covers");
 
 try {
   // mkdirSync est utilisé au démarrage : l'application doit disposer de ce
   // dossier avant de pouvoir accepter le premier upload.
   fs.mkdirSync(UPLOADS, { recursive: true });
+  fs.mkdirSync(COVERS, { recursive: true });
   console.log(`[startup] Dossier des uploads prêt : ${UPLOADS}`);
 } catch (error) {
   console.error("[startup] Impossible de créer le dossier des uploads", error);
@@ -24,7 +28,10 @@ try {
 }
 
 // Ce secret reste côté serveur. Il ne doit jamais être copié dans Angular.
-const SECRET = process.env.JWT_SECRET || "tp1-development-secret";
+const SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.JWT_SECRET) {
+  console.warn('[auth] JWT_SECRET absent : clé temporaire générée, les sessions expireront au redémarrage');
+}
 
 // La taille maximale d'un fichier audio est de 25 Mo. Les fichiers plus gros
 // sont refusés par Multer avant d'être écrits sur le disque.
@@ -45,7 +52,7 @@ const allowed = new Set([
  * Le mot de passe n'est jamais placé dans le token. `sub` signifie subject
  * et contient l'identifiant MongoDB de l'utilisateur.
  */
-function token(user) {
+export function token(user) {
   console.log(`[auth] Création d'un token pour l'utilisateur ${user.id}`);
   return jwt.sign({ sub: user.id, email: user.email }, SECRET, {
     expiresIn: "2h",
@@ -206,7 +213,7 @@ export function createApp() {
       // des raisons de sécurité.
       const user = await User.findOne({ email }).select("+passwordHash");
 
-      if (!user || !(await user.verifyPassword(req.body?.password || ""))) {
+      if (!user || !user.passwordHash || !(await user.verifyPassword(req.body?.password || ""))) {
         console.warn(`[auth] Identifiants incorrects pour ${email}`);
         return res.status(401).json({ message: "Identifiants incorrects" });
       }
@@ -218,6 +225,8 @@ export function createApp() {
       next(error);
     }
   });
+
+  registerAlternateAuth(app, token, auth);
 
   /** Retourne le profil public de l'utilisateur identifié par le JWT. 
    * Les paramètres sont :
@@ -287,7 +296,7 @@ export function createApp() {
           .sort({ createdAt: -1 })
           .skip((page - 1) * limit)
           .limit(limit)
-          .select("-storedName")
+          .select("-storedName +coverStoredName")
           .lean(),
         Track.countDocuments(filter),
       ]);
@@ -300,6 +309,8 @@ export function createApp() {
       const publicItems = items.map((track) => ({
         ...track,
         id: String(track._id),
+        hasCover: Boolean(track.coverStoredName),
+        coverStoredName: undefined,
         _id: undefined,
       }));
 
@@ -336,15 +347,40 @@ export function createApp() {
     auth,
     upload.single("audio"),
     async (req, res, next) => {
+      let coverStoredName;
       try {
         if (!req.file) {
           console.warn(`[tracks] Upload sans fichier par ${req.auth.sub}`);
           return res.status(400).json({ message: "Fichier audio requis" });
         }
 
+        let metadata;
+        let coverMimeType;
+        try {
+          metadata = await parseFile(req.file.path, { skipCovers: false });
+          const picture = metadata.common.picture?.[0];
+          if (picture && ['image/jpeg', 'image/png'].includes(picture.format) && picture.data.length <= 2 * 1024 * 1024) {
+            coverMimeType = picture.format;
+            coverStoredName = crypto.randomUUID() + (coverMimeType === 'image/png' ? '.png' : '.jpg');
+            await fsPromises.writeFile(path.join(COVERS, coverStoredName), picture.data);
+          }
+        } catch (error) {
+          console.warn('[tracks] Métadonnées indisponibles', error?.message);
+          if (coverStoredName) {
+            try { await fsPromises.unlink(path.join(COVERS, coverStoredName)); }
+            catch (cleanupError) { console.warn('[tracks] Nettoyage de pochette impossible', cleanupError?.message); }
+          }
+          coverStoredName = undefined;
+          coverMimeType = undefined;
+        }
         const track = await Track.create({
           ownerId: req.auth.sub,
-          title: req.body.title || req.file.originalname,
+          title: req.body.title?.trim() || metadata?.common.title || req.file.originalname,
+          artist: metadata?.common.artist || "",
+          album: metadata?.common.album || "",
+          duration: metadata?.format.duration,
+          coverStoredName,
+          coverMimeType,
           originalName: req.file.originalname,
           storedName: req.file.filename,
           mimeType: req.file.mimetype,
@@ -370,10 +406,29 @@ export function createApp() {
             );
           }
         }
+        if (coverStoredName) {
+          try { await fsPromises.unlink(path.join(COVERS, coverStoredName)); }
+          catch (cleanupError) { console.error('[tracks] Nettoyage de pochette impossible', cleanupError); }
+        }
         next(error);
       }
     },
   );
+
+  app.get('/api/tracks/:id/cover', auth, async (req, res, next) => {
+    try {
+      const track = await Track.findOne({ _id: req.params.id, ownerId: req.auth.sub }).select('+coverStoredName +coverMimeType');
+      if (!track?.coverStoredName) return res.status(404).json({ message: 'Pochette inconnue' });
+      res.type(track.coverMimeType);
+      res.set('X-Content-Type-Options', 'nosniff');
+      return res.sendFile(path.join(COVERS, track.coverStoredName), error => {
+        if (error && !res.headersSent) next(error);
+      });
+    } catch (error) {
+      console.error('[tracks] Lecture de pochette impossible', error);
+      next(error);
+    }
+  });
 
   /** Envoie le contenu binaire d'une piste après vérification de sa propriété. */
   app.get("/api/tracks/:id/audio", auth, async (req, res, next) => {
@@ -411,7 +466,7 @@ export function createApp() {
       const track = await Track.findOneAndDelete({
         _id: req.params.id,
         ownerId: req.auth.sub,
-      }).select("+storedName");
+      }).select("+storedName +coverStoredName");
 
       if (!track) {
         console.warn(`[tracks] Suppression impossible : ${req.params.id}`);
@@ -421,6 +476,10 @@ export function createApp() {
       const audioPath = path.join(UPLOADS, track.storedName);
       try {
         await fsPromises.unlink(audioPath);
+        if (track.coverStoredName) {
+          try { await fsPromises.unlink(path.join(COVERS, track.coverStoredName)); }
+          catch (coverError) { console.warn('[tracks] Pochette non supprimée', coverError?.message); }
+        }
         console.log(`[tracks] Fichier supprimé : ${audioPath}`);
       } catch (error) {
         // L'exception n'est volontairement pas ignorée : l'administrateur doit

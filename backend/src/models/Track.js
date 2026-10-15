@@ -18,6 +18,11 @@ const schema = new mongoose.Schema(
     storedName: { type: String, required: true, select: false },
     mimeType: { type: String, required: true },
     size: { type: Number, required: true, min: 0 },
+    artist: { type: String, default: "" },
+    album: { type: String, default: "" },
+    duration: { type: Number, min: 0 },
+    coverStoredName: { type: String, select: false },
+    coverMimeType: { type: String, select: false },
   },
   { timestamps: true },
 );
@@ -38,6 +43,10 @@ schema.methods.toPublic = function () {
     originalName: this.originalName,
     mimeType: this.mimeType,
     size: this.size,
+    artist: this.artist,
+    album: this.album,
+    duration: this.duration,
+    hasCover: Boolean(this.coverStoredName),
     createdAt: this.createdAt,
   };
 };
