@@ -1,5 +1,6 @@
 import { Component, inject, signal, DestroyRef } from '@angular/core';
-import { FormControl, ReactiveFormsModule } from '@angular/forms';
+import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { HttpEventType, HttpErrorResponse } from '@angular/common/http';
 import { Track } from '../../shared/models/track.model';
@@ -11,6 +12,8 @@ import { ZardBadgeComponent } from '@/shared/components/badge';
 import { ZardSeparatorComponent } from '@/shared/components/separator';
 import { ZardDialogImports } from '@/shared/components/dialog/dialog.imports';
 import { ZardSonnerService } from '@/shared/components/sonner';
+import { TrackCoverComponent } from '@/shared/components/track-cover';
+import { DurationPipe } from '@/shared/pipes/duration.pipe';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import {
   lucideUpload,
@@ -21,8 +24,13 @@ import {
   lucideChevronLeft,
   lucideChevronRight,
   lucideFile,
-  lucidePause,
+  lucideImagePlus,
+  lucideX,
 } from '@ng-icons/lucide';
+
+const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
+const MAX_COVER_SIZE = 5 * 1024 * 1024;
+const COVER_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 @Component({
   imports: [
@@ -35,6 +43,8 @@ import {
     ZardBadgeComponent,
     ...ZardDialogImports,
     NgIcon,
+    TrackCoverComponent,
+    DurationPipe,
   ],
   templateUrl: './tracks-page.html',
   styleUrl: './tracks-page.css',
@@ -48,7 +58,8 @@ import {
       lucideChevronLeft,
       lucideChevronRight,
       lucideFile,
-      lucidePause,
+      lucideImagePlus,
+      lucideX,
     }),
   ],
 })
@@ -56,6 +67,7 @@ export class TracksPageComponent {
   private readonly service = inject(TrackService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly sonner = inject(ZardSonnerService);
+  private readonly router = inject(Router);
 
   readonly tracks = signal<Track[]>([]);
   readonly page = signal(1);
@@ -63,8 +75,13 @@ export class TracksPageComponent {
   readonly limit = signal(5);
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
-  readonly audioUrl = signal('');
-  readonly title = new FormControl('', { nonNullable: true });
+  readonly form = new FormGroup({
+    title: new FormControl('', { nonNullable: true }),
+    artist: new FormControl('', { nonNullable: true }),
+    album: new FormControl('', { nonNullable: true }),
+    genre: new FormControl('', { nonNullable: true }),
+  });
+  readonly title = this.form.controls.title;
 
   readonly uploadError = signal<string | null>(null);
   readonly uploadSuccess = signal<string | null>(null);
@@ -72,8 +89,10 @@ export class TracksPageComponent {
   readonly uploadProgress = signal(0);
   readonly ghostFile = signal<File | null>(null);
 
-  readonly currentTrack = signal<Track | null>(null);
-  readonly playError = signal<string | null>(null);
+  /** Optional cover chosen by the user, with a local preview URL. */
+  readonly coverFile = signal<File | null>(null);
+  readonly coverPreview = signal<string | null>(null);
+
   readonly deleting = signal<Set<string>>(new Set());
 
   /** Delete confirmation dialog state */
@@ -87,33 +106,68 @@ export class TracksPageComponent {
 
   constructor() {
     this.load();
-    this.destroyRef.onDestroy(() => {
-      if (this.audioUrl()) URL.revokeObjectURL(this.audioUrl());
-    });
+    this.destroyRef.onDestroy(() => this.setCover(null));
   }
 
   choose(event: Event): void {
     if (this.uploading()) return;
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) this.selectAudio(file);
+  }
+
+  /** Validates an audio file chosen by click or drag-and-drop. */
+  selectAudio(file: File): void {
     this.uploadProgress.set(0);
     this.uploadError.set(null);
     this.uploadSuccess.set(null);
-    this.file = (event.target as HTMLInputElement).files?.[0];
 
-    if (!this.file) return;
-
-    if (!this.file.type.startsWith('audio/')) {
+    if (!file.type.startsWith('audio/')) {
       this.uploadError.set('Le fichier doit être un format audio.');
       this.file = undefined;
       return;
     }
 
-    if (this.file.size > 25 * 1024 * 1024) {
+    if (file.size > MAX_AUDIO_SIZE) {
       this.uploadError.set('Le fichier ne doit pas dépasser 25 Mo.');
       this.file = undefined;
       return;
     }
 
-    console.debug('[TracksPage] Fichier valide', this.file.name);
+    this.file = file;
+    console.debug('[TracksPage] Fichier valide', file.name);
+  }
+
+  chooseCover(event: Event): void {
+    if (this.uploading()) return;
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+
+    if (!COVER_TYPES.includes(file.type)) {
+      this.uploadError.set('La pochette doit être une image JPEG, PNG ou WebP.');
+      return;
+    }
+    if (file.size > MAX_COVER_SIZE) {
+      this.uploadError.set('La pochette ne doit pas dépasser 5 Mo.');
+      return;
+    }
+
+    this.uploadError.set(null);
+    this.setCover(file);
+    console.debug('[TracksPage] Pochette choisie', file.name);
+  }
+
+  removeCover(): void {
+    this.setCover(null);
+  }
+
+  /** Replaces the chosen cover and releases the previous preview URL. */
+  private setCover(file: File | null): void {
+    const previous = this.coverPreview();
+    if (previous) URL.revokeObjectURL(previous);
+    this.coverFile.set(file);
+    this.coverPreview.set(file ? URL.createObjectURL(file) : null);
   }
 
   onDragOver(event: DragEvent): void {
@@ -136,24 +190,7 @@ export class TracksPageComponent {
     if (this.uploading()) return;
 
     const droppedFile = event.dataTransfer?.files[0];
-    if (!droppedFile) return;
-
-    this.uploadProgress.set(0);
-    this.uploadError.set(null);
-    this.uploadSuccess.set(null);
-
-    if (!droppedFile.type.startsWith('audio/')) {
-      this.uploadError.set('Le fichier doit être un format audio.');
-      return;
-    }
-
-    if (droppedFile.size > 25 * 1024 * 1024) {
-      this.uploadError.set('Le fichier ne doit pas dépasser 25 Mo.');
-      return;
-    }
-
-    this.file = droppedFile;
-    console.debug('[TracksPage] Fichier droppé', this.file.name);
+    if (droppedFile) this.selectAudio(droppedFile);
   }
 
   load(): void {
@@ -194,14 +231,14 @@ export class TracksPageComponent {
     if (!this.file || this.uploading()) return;
 
     this.uploading.set(true);
-    this.title.disable();
+    this.form.disable();
     this.uploadError.set(null);
     this.uploadSuccess.set(null);
 
     this.uploadProgress.set(0);
     this.ghostFile.set(this.file);
 
-    this.service.upload(this.file, this.title.value || this.file.name).subscribe({
+    this.service.upload(this.file, { ...this.form.getRawValue(), cover: this.coverFile() }).subscribe({
       next: (event) => {
         if (event.type === HttpEventType.UploadProgress) {
           if (event.total) {
@@ -210,11 +247,12 @@ export class TracksPageComponent {
         } else if (event.type === HttpEventType.Response) {
           console.debug('[TracksPage] Piste envoyée', event.body?.id);
           this.sonner.success('Piste envoyée avec succès !');
-          this.title.setValue('');
+          this.form.reset();
+          this.form.enable();
           this.file = undefined;
+          this.setCover(null);
           this.ghostFile.set(null);
           this.uploading.set(false);
-          this.title.enable();
           this.page.set(1);
           this.load();
         }
@@ -223,28 +261,16 @@ export class TracksPageComponent {
         console.error('[TracksPage] Envoi impossible');
         this.sonner.error('Erreur serveur lors de l\'envoi.');
         this.uploading.set(false);
-        this.title.enable();
+        this.form.enable();
         this.ghostFile.set(null);
       },
     });
   }
 
+  /** Opens the player page, which shows the cover, the details and the waveform. */
   play(track: Track): void {
-    this.currentTrack.set(track);
-    this.playError.set(null);
-
-    this.service.audio(track.id).subscribe({
-      next: (blob) => {
-        console.debug('[TracksPage] Audio chargé', track.id);
-        const previousUrl = this.audioUrl();
-        if (previousUrl) URL.revokeObjectURL(previousUrl);
-        this.audioUrl.set(URL.createObjectURL(blob));
-      },
-      error: (error) => {
-        console.error('[TracksPage] Lecture impossible');
-        this.playError.set('Impossible de lire la piste.');
-      }
-    });
+    console.debug('[TracksPage] Ouverture du lecteur', track.id);
+    void this.router.navigate(['/tracks', track.id]);
   }
 
   /** Open delete confirmation dialog */

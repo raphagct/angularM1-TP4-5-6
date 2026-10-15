@@ -19,8 +19,48 @@
       </z-card-header>
 
       <z-card-content class="upload-content">
-        <label class="input-label">Title</label>
-        <input class="mash-input" [formControl]="title" placeholder="Track name..." />
+        <div class="details-row">
+          <div class="cover-picker">
+            @if (coverPreview()) {
+              <img [src]="coverPreview()" alt="Aperçu de la pochette" class="cover-preview" />
+              <button type="button" class="cover-remove" (click)="removeCover()" [disabled]="uploading()" aria-label="Retirer la pochette">
+                <ng-icon name="lucideX" />
+              </button>
+            } @else {
+              <label class="cover-empty">
+                <ng-icon name="lucideImagePlus" />
+                <span>Cover</span>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  class="sr-only"
+                  (change)="chooseCover($event)"
+                  [disabled]="uploading()"
+                  aria-label="Choisir une pochette"
+                />
+              </label>
+            }
+          </div>
+
+          <div class="details-fields">
+            <label class="input-label" for="track-title">Title</label>
+            <input id="track-title" class="mash-input" [formControl]="title" placeholder="Read from tags if empty" />
+            <label class="input-label" for="track-artist">Artist</label>
+            <input id="track-artist" class="mash-input" [formControl]="form.controls.artist" placeholder="Artist..." />
+          </div>
+        </div>
+
+        <div class="fields-row">
+          <div>
+            <label class="input-label" for="track-album">Album</label>
+            <input id="track-album" class="mash-input" [formControl]="form.controls.album" placeholder="Album..." />
+          </div>
+          <div>
+            <label class="input-label" for="track-genre">Genre</label>
+            <input id="track-genre" class="mash-input" [formControl]="form.controls.genre" placeholder="Genre..." />
+          </div>
+        </div>
+        <p class="form-hint">Empty fields and the cover are filled from the file tags when available.</p>
 
         <div
           class="dropzone"
@@ -111,15 +151,28 @@
       }
 
       @for (track of tracks(); track track.id) {
-        <div class="track-card" [class.playing]="currentTrack()?.id === track.id">
+        <div class="track-card">
+          <app-track-cover class="track-thumb" [trackId]="track.id" [hasCover]="!!track.hasCover" [alt]="'Pochette de ' + track.title" />
           <div class="track-info">
             <span class="track-title">{{ track.title }}</span>
-            <span class="track-filename">
-              <ng-icon name="lucideFile" class="file-icon" />
-              {{ track.originalName }}
-            </span>
+            @if (track.artist || track.album) {
+              <span class="track-artist">
+                {{ track.artist }}
+                @if (track.artist && track.album) { · }
+                {{ track.album }}
+              </span>
+            } @else {
+              <span class="track-filename">
+                <ng-icon name="lucideFile" class="file-icon" />
+                {{ track.originalName }}
+              </span>
+            }
             <div class="track-meta">
               <z-badge zType="secondary" class="meta-badge">{{ track.mimeType }}</z-badge>
+              @if (track.duration) {
+                <span>{{ track.duration | duration }}</span>
+                <span>·</span>
+              }
               <span>{{ track.size / 1024 | number:'1.0-0' }} Ko</span>
               <span>·</span>
               <span>{{ track.createdAt | date:'shortDate' }}</span>
@@ -127,7 +180,7 @@
           </div>
           <div class="track-actions">
             <button z-button zType="default" zSize="sm" zShape="circle" (click)="play(track)" [attr.aria-label]="'Play ' + track.title">
-              <ng-icon [name]="currentTrack()?.id === track.id ? 'lucidePause' : 'lucidePlay'" />
+              <ng-icon name="lucidePlay" />
             </button>
             <button z-button zType="ghost" zSize="sm" zShape="circle" (click)="confirmDelete(track)" [disabled]="deleting().has(track.id)" [attr.aria-label]="'Delete ' + track.title" class="delete-btn">
               @if (deleting().has(track.id)) {
@@ -161,20 +214,6 @@
         </div>
       }
 
-      @if (playError()) {
-        <div class="error-box">{{ playError() }}</div>
-      }
-
-      <!-- Audio Player -->
-      @if (audioUrl()) {
-        <div class="player">
-          <div class="player-info">
-            <ng-icon name="lucideMusic" class="player-icon" />
-            <span>Now playing: <strong>{{ currentTrack()?.title }}</strong></span>
-          </div>
-          <audio [src]="audioUrl()" controls autoplay></audio>
-        </div>
-      }
     </div>
   </div>
 </section>

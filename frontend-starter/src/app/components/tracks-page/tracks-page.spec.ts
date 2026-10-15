@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { HttpEventType, provideHttpClient, withXhr } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Router, provideRouter } from '@angular/router';
 import { ZardSonnerService } from '@/shared/components/sonner';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { TracksPageComponent } from './tracks-page';
@@ -13,12 +14,18 @@ describe('TracksPageComponent', () => {
   const track = { id: '1', title: 'Test', originalName: 'test.mp3', mimeType: 'audio/mpeg', size: 100, createdAt: '2026-01-01' };
   const page = { items: [track], total: 1, page: 1, limit: 5, pages: 1 };
 
+  const createObjectURL = vi.fn(() => 'blob:preview');
+  const revokeObjectURL = vi.fn();
+
   beforeEach(() => {
+    createObjectURL.mockClear();
+    revokeObjectURL.mockClear();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
     sonner.success.mockClear();
     sonner.error.mockClear();
     TestBed.configureTestingModule({
       imports: [TracksPageComponent],
-      providers: [provideHttpClient(withXhr()), provideHttpClientTesting(), { provide: ZardSonnerService, useValue: sonner }],
+      providers: [provideHttpClient(withXhr()), provideHttpClientTesting(), provideRouter([]), { provide: ZardSonnerService, useValue: sonner }],
     });
     TestBed.overrideProvider(ZardSonnerService, { useValue: sonner });
     component = TestBed.createComponent(TracksPageComponent).componentInstance;
@@ -109,5 +116,195 @@ describe('TracksPageComponent', () => {
     http.expectOne('/api/tracks?page=1&limit=5').flush({}, { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('Impossible de charger les pistes.');
+  });
+
+  const audioFile = (size = 10, type = 'audio/mpeg') => {
+    const file = new File(['a'], 'song.mp3', { type });
+    Object.defineProperty(file, 'size', { value: size });
+    return file;
+  };
+  const imageFile = (type = 'image/png', size = 10) => {
+    const file = new File(['i'], 'cover.png', { type });
+    Object.defineProperty(file, 'size', { value: size });
+    return file;
+  };
+  const inputEvent = (file?: File) => ({ target: { files: file ? [file] : [], value: 'C:\\fake' } }) as unknown as Event;
+  const dropEvent = (file?: File) =>
+    ({ preventDefault: vi.fn(), stopPropagation: vi.fn(), dataTransfer: { files: file ? [file] : [] } }) as unknown as DragEvent;
+
+  describe('sélection du fichier audio', () => {
+    it('accepte un fichier audio valide choisi au clic', () => {
+      component.choose(inputEvent(audioFile()));
+      expect(component.file?.name).toBe('song.mp3');
+      expect(component.uploadError()).toBeNull();
+    });
+
+    it('refuse un fichier qui n’est pas audio', () => {
+      component.choose(inputEvent(audioFile(10, 'text/plain')));
+      expect(component.file).toBeUndefined();
+      expect(component.uploadError()).toBe('Le fichier doit être un format audio.');
+    });
+
+    it('refuse un fichier de plus de 25 Mo', () => {
+      component.choose(inputEvent(audioFile(25 * 1024 * 1024 + 1)));
+      expect(component.file).toBeUndefined();
+      expect(component.uploadError()).toBe('Le fichier ne doit pas dépasser 25 Mo.');
+    });
+
+    it('ignore un choix vide et un choix pendant un upload', () => {
+      component.choose(inputEvent());
+      expect(component.file).toBeUndefined();
+      component.uploading.set(true);
+      component.choose(inputEvent(audioFile()));
+      expect(component.file).toBeUndefined();
+    });
+
+    it('gère le glisser-déposer', () => {
+      component.onDragOver(dropEvent());
+      expect(component.isDragging()).toBe(true);
+      component.onDragLeave(dropEvent());
+      expect(component.isDragging()).toBe(false);
+
+      component.onDragOver(dropEvent());
+      component.onDrop(dropEvent(audioFile()));
+      expect(component.isDragging()).toBe(false);
+      expect(component.file?.name).toBe('song.mp3');
+    });
+
+    it('applique les mêmes validations au dépôt', () => {
+      component.onDrop(dropEvent(audioFile(10, 'image/png')));
+      expect(component.uploadError()).toBe('Le fichier doit être un format audio.');
+      component.uploading.set(true);
+      component.onDrop(dropEvent(audioFile()));
+      expect(component.file).toBeUndefined();
+    });
+  });
+
+  describe('pochette', () => {
+    it('accepte une image et crée un aperçu', () => {
+      const event = inputEvent(imageFile());
+      component.chooseCover(event);
+      expect(component.coverFile()?.name).toBe('cover.png');
+      expect(component.coverPreview()).toBe('blob:preview');
+      // L'input est vidé pour pouvoir re-choisir le même fichier.
+      expect((event.target as HTMLInputElement).value).toBe('');
+    });
+
+    it('refuse un format d’image non supporté', () => {
+      component.chooseCover(inputEvent(imageFile('image/gif')));
+      expect(component.coverFile()).toBeNull();
+      expect(component.uploadError()).toBe('La pochette doit être une image JPEG, PNG ou WebP.');
+    });
+
+    it('refuse une image de plus de 5 Mo', () => {
+      component.chooseCover(inputEvent(imageFile('image/jpeg', 5 * 1024 * 1024 + 1)));
+      expect(component.coverFile()).toBeNull();
+      expect(component.uploadError()).toBe('La pochette ne doit pas dépasser 5 Mo.');
+    });
+
+    it('retire la pochette et libère l’aperçu', () => {
+      component.chooseCover(inputEvent(imageFile()));
+      component.removeCover();
+      expect(component.coverFile()).toBeNull();
+      expect(component.coverPreview()).toBeNull();
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview');
+    });
+
+    it('affiche l’aperçu dans le formulaire', () => {
+      const fixture = TestBed.createComponent(TracksPageComponent);
+      http.expectOne('/api/tracks?page=1&limit=5').flush({ ...page, items: [] });
+      fixture.componentInstance.chooseCover(inputEvent(imageFile()));
+      fixture.detectChanges();
+      const preview = fixture.nativeElement.querySelector('.cover-preview') as HTMLImageElement;
+      expect(preview.getAttribute('src')).toBe('blob:preview');
+    });
+  });
+
+  it('envoie les métadonnées saisies et la pochette, puis réinitialise le formulaire', () => {
+    component.file = audioFile();
+    component.form.setValue({ title: 'T', artist: 'A', album: 'B', genre: 'G' });
+    component.chooseCover(inputEvent(imageFile()));
+    component.upload();
+
+    const req = http.expectOne('/api/tracks');
+    const body = req.request.body as FormData;
+    expect(body.get('artist')).toBe('A');
+    expect(body.get('album')).toBe('B');
+    expect(body.get('genre')).toBe('G');
+    expect((body.get('cover') as File).name).toBe('cover.png');
+    expect(component.form.disabled).toBe(true);
+
+    req.flush(track, { status: 201, statusText: 'Created' });
+    http.expectOne('/api/tracks?page=1&limit=5').flush(page);
+    expect(component.form.getRawValue()).toEqual({ title: '', artist: '', album: '', genre: '' });
+    expect(component.form.enabled).toBe(true);
+    expect(component.coverFile()).toBeNull();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview');
+  });
+
+  it('laisse le serveur lire les tags quand les champs sont vides', () => {
+    component.file = audioFile();
+    component.upload();
+    const body = http.expectOne('/api/tracks').request.body as FormData;
+    expect(body.has('title')).toBe(false);
+    expect(body.has('cover')).toBe(false);
+  });
+
+  it('n’envoie rien sans fichier', () => {
+    component.upload();
+    http.expectNone('/api/tracks');
+  });
+
+  it('ouvre la page lecteur au clic sur Play', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    component.play(track);
+    expect(navigate).toHaveBeenCalledWith(['/tracks', '1']);
+  });
+
+  it('affiche la pochette, l’artiste, l’album et la durée de chaque piste', () => {
+    const fixture = TestBed.createComponent(TracksPageComponent);
+    const rich = { ...track, artist: 'Miles', album: 'Kind of Blue', duration: 125, hasCover: true };
+    http.expectOne('/api/tracks?page=1&limit=5').flush({ ...page, items: [rich] });
+    fixture.detectChanges();
+    http.expectOne('/api/tracks/1/cover').flush(new Blob(['img']));
+    fixture.detectChanges();
+
+    const card = fixture.nativeElement.querySelector('.track-card') as HTMLElement;
+    expect(card.querySelector('app-track-cover img')?.getAttribute('src')).toBe('blob:preview');
+    expect(card.querySelector('.track-artist')?.textContent).toContain('Miles');
+    expect(card.querySelector('.track-artist')?.textContent).toContain('Kind of Blue');
+    expect(card.textContent).toContain('2:05');
+  });
+
+  it('affiche le nom du fichier quand artiste et album sont inconnus', () => {
+    const fixture = TestBed.createComponent(TracksPageComponent);
+    http.expectOne('/api/tracks?page=1&limit=5').flush(page);
+    fixture.detectChanges();
+    const card = fixture.nativeElement.querySelector('.track-card') as HTMLElement;
+    expect(card.querySelector('.track-artist')).toBeNull();
+    expect(card.querySelector('.track-filename')?.textContent).toContain('test.mp3');
+  });
+
+  it('affiche un état vide et la pagination', () => {
+    const fixture = TestBed.createComponent(TracksPageComponent);
+    http.expectOne('/api/tracks?page=1&limit=5').flush({ ...page, items: [], total: 0 });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('No tracks yet');
+
+    const paged = TestBed.createComponent(TracksPageComponent);
+    http.expectOne('/api/tracks?page=1&limit=5').flush({ ...page, total: 12 });
+    paged.detectChanges();
+    expect(paged.nativeElement.querySelector('.page-info').textContent).toContain('1 / 3');
+  });
+
+  it('navigue entre les pages sans sortir des bornes', () => {
+    component.total.set(12);
+    component.go(0);
+    component.go(4);
+    http.expectNone(() => true);
+    component.go(2);
+    http.expectOne('/api/tracks?page=2&limit=5').flush({ ...page, total: 12 });
+    expect(component.page()).toBe(2);
   });
 });

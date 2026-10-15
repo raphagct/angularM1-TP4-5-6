@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
-import { of, throwError } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { LoginPageComponent } from './login-page';
 import { AuthService } from '../../shared/services/auth.service';
@@ -54,5 +54,18 @@ describe('LoginPageComponent', () => {
     expect(authServiceMock.login).toHaveBeenCalled();
     expect(component.error()).toBe('Invalid credentials');
     expect(component.loading()).toBe(false);
+  });
+
+  it('should show a default message when the API gives none', () => {
+    authServiceMock.login.mockReturnValue(throwError(() => ({})));
+    component.submit();
+    expect(component.error()).toBe('Erreur de connexion');
+    expect(router.navigateByUrl).not.toHaveBeenCalled();
+  });
+
+  it('should set loading while the request is pending', () => {
+    authServiceMock.login.mockReturnValue(new Subject());
+    component.submit();
+    expect(component.loading()).toBe(true);
   });
 });

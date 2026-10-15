@@ -1,7 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { HttpClient, HttpEvent } from '@angular/common/http';
 import { Page } from '../models/page.model';
-import { Track } from '../models/track.model';
+import { Track, TrackUploadDetails } from '../models/track.model';
 import { Observable } from 'rxjs';
 
 /** Encapsulates all HTTP operations for backing tracks. */
@@ -15,10 +15,19 @@ export class TrackService {
     });
   }
 
-  upload(file: File, title: string): Observable<HttpEvent<Track>> {
+  get(id: string) {
+    return this.http.get<Track>(`/api/tracks/${id}`);
+  }
+
+  upload(file: File, details: TrackUploadDetails = {}): Observable<HttpEvent<Track>> {
     const body = new FormData();
     body.append('audio', file);
-    body.append('title', title);
+    // Empty fields are not sent so the API can use the tags read from the file.
+    for (const key of ['title', 'artist', 'album', 'genre'] as const) {
+      const value = details[key]?.trim();
+      if (value) body.append(key, value);
+    }
+    if (details.cover) body.append('cover', details.cover);
     return this.http.post<Track>('/api/tracks', body, {
       reportProgress: true,
       observe: 'events',
@@ -27,6 +36,13 @@ export class TrackService {
 
   audio(id: string) {
     return this.http.get(`/api/tracks/${id}/audio`, {
+      responseType: 'blob',
+    });
+  }
+
+  /** The cover is fetched as a blob because an <img> cannot send the JWT header. */
+  cover(id: string) {
+    return this.http.get(`/api/tracks/${id}/cover`, {
       responseType: 'blob',
     });
   }

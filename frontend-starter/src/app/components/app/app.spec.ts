@@ -8,6 +8,7 @@ describe('AppComponent', () => {
   let component: AppComponent;
   let authServiceMock: any;
   let router: Router;
+  let fixture: ReturnType<typeof TestBed.createComponent<AppComponent>>;
 
   beforeEach(async () => {
     Object.defineProperty(window, 'matchMedia', {
@@ -40,7 +41,7 @@ describe('AppComponent', () => {
     router = TestBed.inject(Router);
     vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
 
-    const fixture = TestBed.createComponent(AppComponent);
+    fixture = TestBed.createComponent(AppComponent);
     component = fixture.componentInstance;
   });
 
@@ -52,5 +53,22 @@ describe('AppComponent', () => {
     component.logout();
     expect(authServiceMock.logout).toHaveBeenCalled();
     expect(router.navigateByUrl).toHaveBeenCalledWith('/login');
+  });
+
+  it('should show only the login link when logged out', () => {
+    fixture.detectChanges();
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('Connexion');
+    expect(text).not.toContain('Library');
+  });
+
+  it('should show the navigation when logged in', () => {
+    authServiceMock.currentUser.mockReturnValue({ id: '1', name: 'A', email: 'a@b.c', createdAt: '' });
+    fixture.detectChanges();
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('Library');
+    expect(text).toContain('Profile');
+    expect(text).toContain('Logout');
+    expect(text).not.toContain('Connexion');
   });
 });

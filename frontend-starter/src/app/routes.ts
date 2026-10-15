@@ -4,6 +4,7 @@ import { LoginPageComponent } from './components/login-page/login-page';
 import { ProfilePageComponent } from './components/profile-page/profile-page';
 import { RegisterPageComponent } from './components/register-page/register-page';
 import { TracksPageComponent } from './components/tracks-page/tracks-page';
+import { TrackPlayerPageComponent } from './components/track-player-page/track-player-page';
 
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'tracks' },
@@ -11,5 +12,6 @@ export const routes: Routes = [
   { path: 'register', component: RegisterPageComponent },
   { path: 'profile', component: ProfilePageComponent, canActivate: [authGuard] },
   { path: 'tracks', component: TracksPageComponent, canActivate: [authGuard] },
+  { path: 'tracks/:id', component: TrackPlayerPageComponent, canActivate: [authGuard] },
   { path: '**', redirectTo: 'tracks' },
 ];

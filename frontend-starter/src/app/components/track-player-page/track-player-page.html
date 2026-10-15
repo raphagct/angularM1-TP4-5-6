@@ -1,0 +1,107 @@
+<section class="player-page animate-fade-in-up">
+  <a routerLink="/tracks" class="back-link">
+    <ng-icon name="lucideArrowLeft" />
+    Back to library
+  </a>
+
+  @if (error()) {
+    <div class="error-box" role="alert">{{ error() }}</div>
+  }
+
+  @if (loading()) {
+    <div class="hero">
+      <div class="skeleton cover-skeleton"></div>
+      <div class="hero-info">
+        <div class="skeleton line-skeleton wide"></div>
+        <div class="skeleton line-skeleton"></div>
+      </div>
+    </div>
+  }
+
+  @if (track(); as t) {
+    <div class="hero">
+      <app-track-cover class="hero-cover" [trackId]="t.id" [hasCover]="!!t.hasCover" [alt]="'Pochette de ' + t.title" />
+
+      <div class="hero-info">
+        <p class="eyebrow">{{ playing() ? 'NOW PLAYING' : 'TRACK' }}</p>
+        <h1 class="track-title">{{ t.title }}</h1>
+        @if (t.artist) {
+          <p class="track-artist">{{ t.artist }}</p>
+        }
+
+        <dl class="details">
+          @if (t.album) {
+            <div><dt>Album</dt><dd>{{ t.album }}</dd></div>
+          }
+          @if (t.genre) {
+            <div><dt>Genre</dt><dd>{{ t.genre }}</dd></div>
+          }
+          @if (t.year) {
+            <div><dt>Year</dt><dd>{{ t.year }}</dd></div>
+          }
+          <div><dt>Duration</dt><dd>{{ duration() | duration }}</dd></div>
+          @if (quality()) {
+            <div><dt>Quality</dt><dd>{{ quality() }}</dd></div>
+          }
+          <div><dt>Size</dt><dd>{{ t.size / 1024 / 1024 | number: '1.1-1' }} Mo</dd></div>
+          <div><dt>Added</dt><dd>{{ t.createdAt | date: 'mediumDate' }}</dd></div>
+        </dl>
+      </div>
+    </div>
+
+    <div class="player-card">
+      <div class="controls">
+        <button
+          z-button
+          zShape="circle"
+          zSize="icon-lg"
+          class="play-btn"
+          (click)="toggle()"
+          [disabled]="!audioUrl()"
+          [attr.aria-label]="playing() ? 'Pause' : 'Play'"
+        >
+          <ng-icon [name]="playing() ? 'lucidePause' : 'lucidePlay'" />
+        </button>
+        <button z-button zType="ghost" zSize="icon-sm" zShape="circle" (click)="skip(-10)" [disabled]="!audioUrl()" aria-label="Reculer de 10 secondes">
+          <ng-icon name="lucideRotateCcw" />
+        </button>
+        <button z-button zType="ghost" zSize="icon-sm" zShape="circle" (click)="skip(10)" [disabled]="!audioUrl()" aria-label="Avancer de 10 secondes">
+          <ng-icon name="lucideRotateCw" />
+        </button>
+
+        <span class="time">{{ currentTime() | duration }} <span class="time-sep">/</span> {{ duration() | duration }}</span>
+
+        <div class="volume">
+          <button z-button zType="ghost" zSize="icon-sm" zShape="circle" (click)="toggleMute()" [attr.aria-label]="muted() ? 'Réactiver le son' : 'Couper le son'">
+            <ng-icon [name]="muted() ? 'lucideVolumeX' : 'lucideVolume2'" />
+          </button>
+          <input type="range" min="0" max="1" step="0.01" [value]="muted() ? 0 : volume()" (input)="setVolume($event)" aria-label="Volume" />
+        </div>
+      </div>
+
+      @if (waveformPeaks().length) {
+        <app-waveform [peaks]="waveformPeaks()" [progress]="progress()" [duration]="duration()" (seek)="seek($event)" />
+        @if (waveformError()) {
+          <p class="waveform-hint">Forme d’onde indisponible pour ce format.</p>
+        }
+      } @else {
+        <div class="waveform-skeleton" aria-live="polite">
+          <span>{{ analysing() ? 'Analyse du son…' : 'Chargement de l’audio…' }}</span>
+        </div>
+      }
+    </div>
+  }
+
+  @if (audioUrl()) {
+    <audio
+      #audio
+      [src]="audioUrl()"
+      autoplay
+      (loadedmetadata)="onLoadedMetadata()"
+      (play)="onPlay()"
+      (pause)="onPause()"
+      (ended)="onEnded()"
+      (timeupdate)="syncTime()"
+    ></audio>
+  }
+</section>
