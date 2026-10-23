@@ -1,14 +1,10 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import {
   extractMetadata,
   normalizeImageMime,
   normalizeMetadata,
   pickText,
-  saveEmbeddedCover,
 } from "../src/metadata.js";
 import { silentMp3, withId3, TINY_PNG } from "./helpers/audio.js";
 
@@ -107,15 +103,17 @@ describe("normalizeMetadata", () => {
 
 describe("extractMetadata", () => {
   test("utilise le parser injecté", async () => {
-    const result = await extractMetadata("/fake.mp3", async (file) => {
-      assert.equal(file, "/fake.mp3");
+    const buffer = Buffer.from("fake");
+    const result = await extractMetadata(buffer, "audio/mpeg", async (input, info) => {
+      assert.equal(input, buffer);
+      assert.equal(info.mimeType, "audio/mpeg");
       return { common: { title: "Injected" }, format: {} };
     });
     assert.equal(result.title, "Injected");
   });
 
   test("retourne un objet vide si le parser échoue", async () => {
-    const result = await extractMetadata("/fake.mp3", async () => {
+    const result = await extractMetadata(Buffer.from("x"), "audio/mpeg", async () => {
       throw new Error("corrompu");
     });
     assert.equal(result.title, undefined);
@@ -123,21 +121,16 @@ describe("extractMetadata", () => {
   });
 
   test("lit un vrai fichier MP3 tagué avec music-metadata", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gpc-meta-"));
-    const file = path.join(dir, "tagged.mp3");
-    await fs.writeFile(
-      file,
-      withId3(silentMp3(), {
+    const file = withId3(silentMp3(), {
         title: "Tagged",
         artist: "The Testers",
         album: "Fixtures",
         genre: "Rock",
         year: 2024,
         picture: { mime: "image/png", data: TINY_PNG },
-      }),
-    );
+    });
 
-    const result = await extractMetadata(file);
+    const result = await extractMetadata(file, "audio/mpeg");
     assert.equal(result.title, "Tagged");
     assert.equal(result.artist, "The Testers");
     assert.equal(result.album, "Fixtures");
@@ -147,30 +140,12 @@ describe("extractMetadata", () => {
     assert.equal(result.sampleRate, 44100);
     assert.equal(result.picture.mimeType, "image/png");
     assert.deepEqual(Buffer.from(result.picture.data), TINY_PNG);
-    await fs.rm(dir, { recursive: true });
   });
 
   test("lit un MP3 sans tag", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gpc-meta-"));
-    const file = path.join(dir, "plain.mp3");
-    await fs.writeFile(file, silentMp3());
-    const result = await extractMetadata(file);
+    const result = await extractMetadata(silentMp3(), "audio/mpeg");
     assert.equal(result.title, undefined);
     assert.equal(result.picture, null);
     assert.ok(result.duration > 0);
-    await fs.rm(dir, { recursive: true });
   });
-});
-
-test("saveEmbeddedCover écrit l'image avec un nom aléatoire et la bonne extension", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gpc-cover-"));
-  const first = await saveEmbeddedCover(dir, { data: TINY_PNG, mimeType: "image/png" });
-  const second = await saveEmbeddedCover(dir, { data: TINY_PNG, mimeType: "image/jpeg" });
-
-  assert.match(first.storedName, /^[0-9a-f-]{36}\.png$/);
-  assert.match(second.storedName, /\.jpg$/);
-  assert.notEqual(first.storedName, second.storedName);
-  assert.equal(first.mimeType, "image/png");
-  assert.deepEqual(await fs.readFile(path.join(dir, first.storedName)), TINY_PNG);
-  await fs.rm(dir, { recursive: true });
 });

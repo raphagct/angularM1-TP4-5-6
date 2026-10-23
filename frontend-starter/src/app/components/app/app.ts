@@ -16,6 +16,16 @@ export class AppComponent {
   readonly auth = inject(AuthService);
   private readonly router = inject(Router);
 
+  constructor() {
+    // After a page reload only the token survives: reload the user it belongs to.
+    if (this.auth.token() && !this.auth.currentUser()) {
+      this.auth.profile().subscribe({
+        next: (user) => console.debug('[App] Utilisateur rechargé', user.id),
+        error: (error) => console.error('[App] Rechargement du profil impossible', error),
+      });
+    }
+  }
+
   logout(): void {
     this.auth.logout();
     void this.router.navigateByUrl('/login');

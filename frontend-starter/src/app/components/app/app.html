@@ -1,7 +1,8 @@
 <header>
   <a routerLink="/tracks" class="logo">mash</a>
   <nav aria-label="Navigation principale">
-    @if (auth.currentUser()) {
+    <!-- The token is known at startup; the user itself is loaded afterwards. -->
+    @if (auth.token()) {
       <a routerLink="/tracks" routerLinkActive="active" class="nav-link">
         <ng-icon name="lucideMusic" class="nav-icon" />
         <span>Library</span>

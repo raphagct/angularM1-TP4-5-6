@@ -5,6 +5,7 @@
     "scripts": {
         "start": "node --env-file=.env src/server.js",
         "start:local": "node src/server.js",
+        "migrate:gridfs": "node --env-file=.env scripts/migrate-files-to-gridfs.js",
         "test": "node --test test/*.test.js"
     },
     "dependencies": {

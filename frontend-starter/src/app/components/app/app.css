@@ -94,9 +94,17 @@ main {
     gap: 1rem;
   }
   nav { gap: 0.15rem; }
-  .nav-link span { display: none; }
+  /* Labels are visually hidden but stay readable by screen readers. */
+  .nav-link span,
+  .logout-btn span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
   .nav-link { padding: 0.5rem; }
-  .logout-btn span { display: none; }
   .logout-btn { padding: 0.5rem; }
   main { padding: 1.5rem 1rem; }
 }

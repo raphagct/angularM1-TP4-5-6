@@ -1,21 +1,27 @@
 import { TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { Router, provideRouter } from '@angular/router';
 import { ProfilePageComponent } from './profile-page';
 import { AuthService } from '../../shared/services/auth.service';
+import { TrackService } from '../../shared/services/track.service';
 import { ZardSonnerService } from '@/shared/components/sonner';
 
 describe('ProfilePageComponent', () => {
   let component: ProfilePageComponent;
   let authServiceMock: any;
   let sonnerMock: any;
+  let tracksMock: any;
+  let fixture: ReturnType<typeof TestBed.createComponent<ProfilePageComponent>>;
 
   beforeEach(async () => {
     authServiceMock = {
-      profile: vi.fn().mockReturnValue(of({ id: '1', name: 'John Doe', email: 'john@example.com' })),
+      profile: vi.fn().mockReturnValue(of({ id: '1', name: 'John Doe', email: 'john@example.com', createdAt: '2026-01-15' })),
       update: vi.fn().mockReturnValue(of({ id: '1', name: 'John Updated' })),
-      currentUser: vi.fn().mockReturnValue({ email: 'john@example.com' })
+      currentUser: vi.fn().mockReturnValue({ email: 'john@example.com' }),
+      logout: vi.fn(),
     };
+    tracksMock = { list: vi.fn().mockReturnValue(of({ items: [], total: 7, page: 1, limit: 1, pages: 7 })) };
 
     sonnerMock = {
       success: vi.fn(),
@@ -27,10 +33,12 @@ describe('ProfilePageComponent', () => {
       providers: [
         { provide: AuthService, useValue: authServiceMock },
         { provide: ZardSonnerService, useValue: sonnerMock },
+        { provide: TrackService, useValue: tracksMock },
+        provideRouter([]),
       ],
     }).compileComponents();
 
-    const fixture = TestBed.createComponent(ProfilePageComponent);
+    fixture = TestBed.createComponent(ProfilePageComponent);
     component = fixture.componentInstance;
   });
 
@@ -49,6 +57,7 @@ describe('ProfilePageComponent', () => {
 
     expect(sonnerMock.error).toHaveBeenCalledWith('Impossible de charger le profil.');
     expect(comp.loading()).toBe(false);
+    expect(comp.loadError()).toBe(true);
   });
 
   it('should save valid profile', () => {
@@ -76,5 +85,58 @@ describe('ProfilePageComponent', () => {
     component.save();
 
     expect(authServiceMock.update).not.toHaveBeenCalled();
+  });
+
+  it('trims the name before saving and keeps the form pristine afterwards', () => {
+    component.form.controls.name.setValue('  John Updated  ');
+    component.form.markAsDirty();
+    component.save();
+    expect(authServiceMock.update).toHaveBeenCalledWith('John Updated');
+    expect(component.form.pristine).toBe(true);
+    expect(component.user()?.name).toBe('John Updated');
+  });
+
+  it('refuses a name shorter than 2 characters once trimmed, like the API', () => {
+    component.form.setValue({ name: ' J ' });
+    component.save();
+    expect(authServiceMock.update).not.toHaveBeenCalled();
+  });
+
+  it('cancel puts back the saved name', () => {
+    component.form.controls.name.setValue('Draft');
+    component.form.markAsDirty();
+    component.cancel();
+    expect(component.form.value.name).toBe('John Doe');
+    expect(component.form.pristine).toBe(true);
+  });
+
+  it('shows initials, email, track count and member date', () => {
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(tracksMock.list).toHaveBeenCalledWith(1, 1);
+    expect(el.querySelector('.avatar')?.textContent?.trim()).toBe('JD');
+    expect(el.querySelector('.identity-email')?.textContent).toContain('john@example.com');
+    expect(el.querySelector('.stats')?.textContent).toContain('7');
+    expect(el.querySelector('.stats')?.textContent).toContain('Jan 2026');
+    // Card titles go through zTitle, otherwise they are not rendered.
+    expect(el.textContent).toContain('Personal information');
+  });
+
+  it('disables Save until the name changes', () => {
+    fixture.detectChanges();
+    const save = (fixture.nativeElement as HTMLElement).querySelector('button[type=submit]') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    component.form.controls.name.setValue('Jane');
+    component.form.markAsDirty();
+    fixture.detectChanges();
+    expect(save.disabled).toBe(false);
+  });
+
+  it('signs out and goes to the login page', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    component.logout();
+    expect(authServiceMock.logout).toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith('/login');
   });
 });

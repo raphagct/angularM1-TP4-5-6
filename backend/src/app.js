@@ -2,19 +2,15 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import jwt from "jsonwebtoken";
-import fs from "node:fs";
-import fsPromises from "node:fs/promises";
-import path from "node:path";
-import crypto from "node:crypto";
 import mongoose from "mongoose";
 import { User } from "./models/User.js";
 import { Track } from "./models/Track.js";
-import { extractMetadata, pickText, saveEmbeddedCover } from "./metadata.js";
+import { extractMetadata, pickText, IMAGE_EXTENSIONS } from "./metadata.js";
+import { createGridFsStorage } from "./storage.js";
 
-// Les fichiers audio restent sur le disque du serveur dans ce TP.
-// MongoDB ne conserve que leurs métadonnées : titre, nom, taille, etc.
-// Le dossier peut être remplacé (tests) via createApp({ uploadsDir }).
-const DEFAULT_UPLOADS = path.resolve("data/uploads");
+// Les fichiers audio et les pochettes sont stockés dans MongoDB (GridFS) :
+// tous les backends branchés sur la même base Atlas y ont accès.
+// Le stockage peut être remplacé (tests) via createApp({ storage }).
 
 // Ce secret reste côté serveur. Il ne doit jamais être copié dans Angular.
 const SECRET = process.env.JWT_SECRET || "tp1-development-secret";
@@ -87,14 +83,19 @@ function validId(req, res, next) {
   next();
 }
 
-/** Supprime un fichier en journalisant l'échec, sans interrompre la requête. */
-async function removeQuietly(filePath) {
-  try {
-    await fsPromises.unlink(filePath);
-    console.log(`[tracks] Fichier supprimé : ${filePath}`);
-  } catch (error) {
-    console.error(`[tracks] Impossible de supprimer ${filePath}`, error);
-  }
+/**
+ * Envoie un flux GridFS dans la réponse HTTP. Une erreur avant le premier
+ * octet (fichier absent de la base) passe au gestionnaire d'erreurs ; après,
+ * la connexion est coupée car le statut HTTP est déjà parti.
+ */
+function sendStream(stream, res, next, label) {
+  stream.on("error", (error) => {
+    console.error(`[tracks] Erreur d'envoi ${label}`, error);
+    if (!res.headersSent) return next(error);
+    res.destroy(error);
+  });
+  stream.on("end", () => console.log(`[tracks] Envoi terminé : ${label}`));
+  stream.pipe(res);
 }
 
 /*
@@ -102,33 +103,18 @@ async function removeQuietly(filePath) {
  * par Express et traite les fichiers envoyés par un formulaire HTML.
  * Documentation officielle : https://github.com/expressjs/multer
  *
- * diskStorage indique que Multer écrit directement le fichier sur disque.
- * Chaque callback doit appeler cb(error, value) : null signifie qu'il n'y a
- * pas d'erreur. Le nom aléatoire évite les collisions entre utilisateurs.
- * Le champ "audio" va dans uploadsDir, le champ "cover" dans coversDir.
+ * memoryStorage garde le fichier dans un Buffer (file.buffer) : il est ensuite
+ * copié dans GridFS par le handler, une fois les validations passées. La
+ * limite de 25 Mo borne la mémoire utilisée par requête.
  */
-function createUpload(uploadsDir, coversDir) {
-  const storage = multer.diskStorage({
-    destination: (_request, file, callback) => {
-      const destination = file.fieldname === "cover" ? coversDir : uploadsDir;
-      console.debug(`[multer] Destination sélectionnée : ${destination}`);
-      callback(null, destination);
-    },
-    filename: (_request, file, callback) => {
-      const filename =
-        crypto.randomUUID() + path.extname(file.originalname).toLowerCase();
-      console.log(`[multer] Nom de stockage généré pour ${file.originalname}`);
-      callback(null, filename);
-    },
-  });
-
+function createUpload() {
   /*
    * limits.fileSize protège le serveur contre les fichiers trop volumineux.
    * fileFilter est appelé avant l'enregistrement : accepter le fichier appelle
    * callback(null, true), le refuser transmet une vraie Error à Express.
    */
   return multer({
-    storage,
+    storage: multer.memoryStorage(),
     limits: { fileSize: MAX_FILE_SIZE },
     fileFilter: (_request, file, callback) => {
       const accepted =
@@ -152,22 +138,18 @@ function createUpload(uploadsDir, coversDir) {
  * Cette séparation permet au serveur réel et aux tests de créer la même
  * application. Le port est ouvert uniquement dans server.js.
  */
-export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
-  const UPLOADS = uploadsDir;
-  const COVERS = path.join(UPLOADS, "covers");
-
-  try {
-    // mkdirSync est utilisé au démarrage : l'application doit disposer de ces
-    // dossiers avant de pouvoir accepter le premier upload.
-    fs.mkdirSync(COVERS, { recursive: true });
-    console.log(`[startup] Dossier des uploads prêt : ${UPLOADS}`);
-  } catch (error) {
-    console.error("[startup] Impossible de créer le dossier des uploads", error);
-    throw error;
-  }
-
-  const upload = createUpload(UPLOADS, COVERS);
+export function createApp({ storage = createGridFsStorage() } = {}) {
+  const upload = createUpload();
   const app = express();
+
+  /** Supprime un fichier stocké en journalisant l'échec, sans interrompre la requête. */
+  async function removeQuietly(id) {
+    try {
+      await storage.remove(id);
+    } catch (error) {
+      console.error(`[tracks] Impossible de supprimer le fichier ${id}`, error);
+    }
+  }
 
   // Journaliser la fin de chaque requête permet de suivre méthode, URL,
   // statut et durée sans exposer les corps contenant des mots de passe.
@@ -361,7 +343,7 @@ export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
    * upload.fields place les fichiers dans req.files.audio et req.files.cover,
    * tandis que req.body contient les champs texte associés.
    * Le middleware auth vérifie le JWT avant d'accepter l'upload.
-   * Après l'écriture sur disque, music-metadata lit les tags du fichier :
+   * Avant l'écriture dans GridFS, music-metadata lit les tags du fichier :
    * une valeur saisie par l'utilisateur est prioritaire sur le tag.
    * La pochette envoyée est prioritaire sur celle intégrée au fichier.
    */
@@ -375,30 +357,40 @@ export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
     async (req, res, next) => {
       const audio = req.files?.audio?.[0];
       const coverFile = req.files?.cover?.[0];
-      // Liste des fichiers écrits pendant cette requête, à nettoyer en cas d'échec.
-      const written = [audio?.path, coverFile?.path].filter(Boolean);
+      // Identifiants GridFS écrits pendant cette requête, à nettoyer en cas d'échec.
+      const written = [];
 
       try {
+        // Les fichiers sont encore en mémoire : un refus n'écrit rien en base.
         if (!audio) {
           console.warn(`[tracks] Upload sans fichier par ${req.auth.sub}`);
-          await Promise.all(written.map(removeQuietly));
           return res.status(400).json({ message: "Fichier audio requis" });
         }
 
         if (coverFile && coverFile.size > MAX_COVER_SIZE) {
           console.warn(`[tracks] Pochette trop lourde : ${coverFile.size} octets`);
-          await Promise.all(written.map(removeQuietly));
           return res.status(400).json({ message: "La pochette ne doit pas dépasser 5 Mo" });
         }
 
-        const metadata = await extractMetadata(audio.path);
+        const metadata = await extractMetadata(audio.buffer, audio.mimetype);
 
-        let cover = null;
-        if (coverFile) {
-          cover = { storedName: coverFile.filename, mimeType: coverFile.mimetype };
-        } else if (metadata.picture) {
-          cover = await saveEmbeddedCover(COVERS, metadata.picture);
-          written.push(path.join(COVERS, cover.storedName));
+        const fileId = await storage.save(audio.buffer, {
+          filename: audio.originalname,
+          contentType: audio.mimetype,
+        });
+        written.push(fileId);
+
+        // La pochette envoyée est prioritaire sur celle intégrée au fichier.
+        const cover = coverFile
+          ? { data: coverFile.buffer, mimeType: coverFile.mimetype }
+          : metadata.picture;
+        let coverFileId;
+        if (cover) {
+          coverFileId = await storage.save(cover.data, {
+            filename: "cover" + IMAGE_EXTENSIONS[cover.mimeType],
+            contentType: cover.mimeType,
+          });
+          written.push(coverFileId);
         }
 
         const body = req.body || {};
@@ -413,20 +405,21 @@ export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
           bitrate: metadata.bitrate,
           sampleRate: metadata.sampleRate,
           originalName: audio.originalname,
-          storedName: audio.filename,
+          fileId,
           mimeType: audio.mimetype,
           size: audio.size,
-          coverStoredName: cover?.storedName,
+          coverFileId,
           coverMimeType: cover?.mimeType,
         });
 
         console.log(`[tracks] Upload enregistré : ${track.id}`);
         res.status(201).json(track.toPublic());
       } catch (error) {
-        console.error("[tracks] Erreur après l'enregistrement du fichier", error);
+        console.error("[tracks] Erreur pendant l'enregistrement de la piste", error);
 
-        // Si MongoDB échoue après l'écriture sur disque, on tente de nettoyer
-        // les fichiers orphelins. L'erreur de nettoyage est elle aussi loguée.
+        // Si la création de la piste échoue après l'écriture dans GridFS, on
+        // tente de nettoyer les fichiers orphelins. L'erreur de nettoyage est
+        // elle aussi loguée.
         await Promise.all(written.map(removeQuietly));
         next(error);
       }
@@ -460,27 +453,20 @@ export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
       const track = await Track.findOne({
         _id: req.params.id,
         ownerId: req.auth.sub,
-      }).select("+coverStoredName");
+      }).select("+coverFileId");
 
       if (!track) {
         console.warn(`[tracks] Pochette introuvable ou interdite : ${req.params.id}`);
         return res.status(404).json({ message: "Piste inconnue" });
       }
-      if (!track.coverStoredName) {
+      if (!track.coverFileId || !(await storage.info(track.coverFileId))) {
         console.log(`[tracks] Piste sans pochette : ${track.id}`);
         return res.status(404).json({ message: "Pochette absente" });
       }
 
       res.type(track.coverMimeType);
       res.set("Cache-Control", "private, max-age=3600");
-      res.sendFile(path.join(COVERS, track.coverStoredName), (error) => {
-        if (error) {
-          console.error(`[tracks] Erreur d'envoi de la pochette ${track.id}`, error);
-          if (!res.headersSent) next(error);
-          return;
-        }
-        console.log(`[tracks] Pochette envoyée : ${track.id}`);
-      });
+      sendStream(storage.stream(track.coverFileId), res, next, `pochette ${track.id}`);
     } catch (error) {
       console.error("[tracks] Erreur de préparation de la pochette", error);
       next(error);
@@ -493,24 +479,45 @@ export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
       const track = await Track.findOne({
         _id: req.params.id,
         ownerId: req.auth.sub,
-      }).select("+storedName");
+      }).select("+fileId");
 
       if (!track) {
         console.warn(`[tracks] Audio introuvable ou interdit : ${req.params.id}`);
         return res.status(404).json({ message: "Piste inconnue" });
       }
 
-      const audioPath = path.join(UPLOADS, track.storedName);
+      const file = track.fileId && (await storage.info(track.fileId));
+      if (!file) {
+        // Cas d'une piste créée avant GridFS dont le fichier n'a pas été migré.
+        console.warn(`[tracks] Fichier audio absent de la base : ${track.id}`);
+        return res.status(404).json({ message: "Fichier audio indisponible" });
+      }
+
       res.type(track.mimeType);
-      // Ce callback permet de loguer le succès ou l'erreur du transfert.
-      res.sendFile(audioPath, (error) => {
-        if (error) {
-          console.error(`[tracks] Erreur d'envoi audio ${track.id}`, error);
-          if (!res.headersSent) next(error);
-          return;
-        }
-        console.log(`[tracks] Audio envoyé : ${track.id}`);
-      });
+      res.set("Accept-Ranges", "bytes");
+
+      // req.range lit l'en-tête Range (lecture partielle, ex. pour avancer
+      // dans le morceau) : -1 = plage impossible, -2 = en-tête mal formé.
+      let start = 0;
+      let end = file.length - 1;
+      const ranges = req.range(file.length);
+      if (ranges === -1) {
+        res.set("Content-Range", `bytes */${file.length}`);
+        return res.status(416).end();
+      }
+      if (Array.isArray(ranges) && ranges.type === "bytes") {
+        ({ start, end } = ranges[0]);
+        res.status(206).set("Content-Range", `bytes ${start}-${end}/${file.length}`);
+      }
+      res.set("Content-Length", String(end - start + 1));
+
+      // Dans GridFS, `end` est exclusif, d'où le + 1.
+      sendStream(
+        storage.stream(track.fileId, { start, end: end + 1 }),
+        res,
+        next,
+        `audio ${track.id}`,
+      );
     } catch (error) {
       console.error("[tracks] Erreur de préparation du flux audio", error);
       next(error);
@@ -523,7 +530,7 @@ export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
       const track = await Track.findOneAndDelete({
         _id: req.params.id,
         ownerId: req.auth.sub,
-      }).select("+storedName +coverStoredName");
+      }).select("+fileId +coverFileId");
 
       if (!track) {
         console.warn(`[tracks] Suppression impossible : ${req.params.id}`);
@@ -531,18 +538,22 @@ export function createApp({ uploadsDir = DEFAULT_UPLOADS } = {}) {
       }
 
       // La pochette est secondaire : un échec est logué sans bloquer la suppression.
-      if (track.coverStoredName) {
-        await removeQuietly(path.join(COVERS, track.coverStoredName));
+      if (track.coverFileId) {
+        await removeQuietly(track.coverFileId);
       }
 
-      const audioPath = path.join(UPLOADS, track.storedName);
+      if (!track.fileId) {
+        // Piste créée avant GridFS : il n'y a aucun fichier à supprimer en base.
+        console.warn(`[tracks] Piste sans fichier GridFS supprimée : ${track.id}`);
+        return res.status(204).end();
+      }
+
       try {
-        await fsPromises.unlink(audioPath);
-        console.log(`[tracks] Fichier supprimé : ${audioPath}`);
+        await storage.remove(track.fileId);
       } catch (error) {
         // L'exception n'est volontairement pas ignorée : l'administrateur doit
         // voir ce fichier orphelin si sa suppression échoue.
-        console.error(`[tracks] Fichier audio non supprimé : ${audioPath}`, error);
+        console.error(`[tracks] Fichier audio non supprimé : ${track.fileId}`, error);
         return res.status(500).json({
           message: "Métadonnée supprimée, mais fichier audio non supprimé",
         });

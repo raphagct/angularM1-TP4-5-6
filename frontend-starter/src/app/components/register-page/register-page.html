@@ -50,7 +50,7 @@
         }
       </div>
 
-      <button z-button type="submit" [disabled]="form.invalid || loading()" [zLoading]="loading()" class="auth-submit">
+      <button z-button type="submit" [zDisabled]="form.invalid || loading()" [zLoading]="loading()" class="auth-submit">
         Create account
       </button>
     </form>

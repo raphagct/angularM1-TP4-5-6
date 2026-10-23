@@ -2,8 +2,8 @@ import mongoose from "mongoose";
 
 /*
  * Ce schéma conserve les métadonnées d'une piste. Le fichier audio lui-même
- * reste sur le disque ; storedName contient le nom technique utilisé côté
- * serveur et n'est jamais exposé par toPublic().
+ * est stocké dans GridFS (voir storage.js) ; fileId contient son identifiant
+ * technique et n'est jamais exposé par toPublic().
  */
 const schema = new mongoose.Schema(
   {
@@ -15,7 +15,7 @@ const schema = new mongoose.Schema(
     },
     title: { type: String, required: true, trim: true },
     originalName: { type: String, required: true },
-    storedName: { type: String, required: true, select: false },
+    fileId: { type: mongoose.Schema.Types.ObjectId, required: true, select: false },
     mimeType: { type: String, required: true },
     size: { type: Number, required: true, min: 0 },
     // Métadonnées lues dans les tags du fichier ou saisies à l'upload.
@@ -27,9 +27,9 @@ const schema = new mongoose.Schema(
     duration: { type: Number, min: 0 },
     bitrate: { type: Number, min: 0 },
     sampleRate: { type: Number, min: 0 },
-    // La pochette est stockée sur le disque comme l'audio ; son nom technique
+    // La pochette est stockée dans GridFS comme l'audio ; son identifiant
     // n'est jamais exposé. coverMimeType sert aussi à savoir si elle existe.
-    coverStoredName: { type: String, select: false },
+    coverFileId: { type: mongoose.Schema.Types.ObjectId, select: false },
     coverMimeType: { type: String },
   },
   { timestamps: true },
@@ -41,7 +41,7 @@ schema.index({ ownerId: 1, createdAt: -1 });
 /**
  * Convertit un document (Mongoose ou objet `.lean()`) en objet sûr pour le
  * frontend. L'identifiant MongoDB devient la propriété simple `id` attendue
- * par Angular et les noms de stockage ne sont jamais renvoyés.
+ * par Angular et les identifiants de stockage ne sont jamais renvoyés.
  */
 schema.statics.publicFrom = function (doc) {
   return {

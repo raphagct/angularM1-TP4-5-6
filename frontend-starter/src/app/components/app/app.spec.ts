@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
+import { of } from 'rxjs';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { AppComponent } from './app';
 import { AuthService } from '../../shared/services/auth.service';
@@ -28,6 +29,8 @@ describe('AppComponent', () => {
     authServiceMock = {
       logout: vi.fn(),
       currentUser: vi.fn().mockReturnValue(null),
+      token: vi.fn().mockReturnValue(null),
+      profile: vi.fn().mockReturnValue(of({ id: '1', name: 'A', email: 'a@b.c', createdAt: '' })),
     };
 
     await TestBed.configureTestingModule({
@@ -62,8 +65,18 @@ describe('AppComponent', () => {
     expect(text).not.toContain('Library');
   });
 
-  it('should show the navigation when logged in', () => {
-    authServiceMock.currentUser.mockReturnValue({ id: '1', name: 'A', email: 'a@b.c', createdAt: '' });
+  it('should not reload the profile without a token', () => {
+    expect(authServiceMock.profile).not.toHaveBeenCalled();
+  });
+
+  it('should reload the user after a page refresh, when only the token is known', () => {
+    authServiceMock.token.mockReturnValue('jwt');
+    TestBed.createComponent(AppComponent);
+    expect(authServiceMock.profile).toHaveBeenCalledTimes(1);
+  });
+
+  it('should show the navigation as soon as a token exists', () => {
+    authServiceMock.token.mockReturnValue('jwt');
     fixture.detectChanges();
     const text = fixture.nativeElement.textContent;
     expect(text).toContain('Library');

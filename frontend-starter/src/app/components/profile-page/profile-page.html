@@ -2,56 +2,124 @@
   <div class="hero">
     <p class="eyebrow">MY ACCOUNT</p>
     <h1>Profile</h1>
-    <p class="hero-sub">Manage your account settings and preferences.</p>
+    <p class="hero-sub">Your identity on mash and how you sign in.</p>
   </div>
 
-  <div class="profile-content">
-    <z-card class="profile-card">
-      <z-card-header>
-        <z-card-title>
-          <div class="card-title-row">
-            <ng-icon name="lucideUser" class="title-icon" />
-            <span>Personal Information</span>
+  @if (loadError()) {
+    <div class="error-box" role="alert">
+      <span>Your profile could not be loaded.</span>
+      <button z-button zType="outline" zSize="sm" (click)="load()">
+        <ng-icon name="lucideRefreshCw" /> Retry
+      </button>
+    </div>
+  }
+
+  <div class="profile-grid">
+    <!-- Identity: who is signed in, since when, and what they have uploaded -->
+    <aside class="identity-card" aria-label="Account summary">
+      @if (loading() && !user()) {
+        <div class="avatar skeleton"></div>
+        <div class="skeleton line wide"></div>
+        <div class="skeleton line"></div>
+      } @else if (user(); as u) {
+        <div class="avatar" aria-hidden="true">{{ initials() }}</div>
+        <h2 class="identity-name">{{ u.name }}</h2>
+        <p class="identity-email">{{ u.email }}</p>
+
+        <div class="stats">
+          <a routerLink="/tracks" class="stat" aria-label="Open my library">
+            <span class="stat-label"><ng-icon name="lucideMusic" /> Tracks</span>
+            <span class="stat-value">{{ trackCount() ?? '–' }}</span>
+          </a>
+          <div class="stat">
+            <span class="stat-label"><ng-icon name="lucideCalendar" /> Member since</span>
+            <span class="stat-value">{{ u.createdAt | date: 'MMM y' }}</span>
           </div>
-        </z-card-title>
-        <z-card-description>Update your display name here.</z-card-description>
-      </z-card-header>
+        </div>
+      }
+    </aside>
 
-      <z-card-content>
-        @if (loading()) {
-          <div class="skeleton-form"></div>
-        } @else {
-          <form [formGroup]="form" (ngSubmit)="save()" class="profile-form">
-            <div class="field">
-              <label class="field-label" for="profile-name">Name</label>
-              <input
-                id="profile-name"
-                class="mash-input"
-                type="text"
-                formControlName="name"
-                placeholder="Your name"
-              />
-              @if (form.controls.name.invalid && form.controls.name.touched) {
-                <span class="field-error">Name is required.</span>
-              }
-            </div>
-            
-            <div class="field">
-              <label class="field-label">Email (Read only)</label>
-              <input class="mash-input disabled" type="email" [value]="auth.currentUser()?.email" disabled />
-            </div>
-          </form>
-        }
-      </z-card-content>
+    <div class="profile-forms">
+      <z-card>
+        <z-card-header>
+          <z-card-title [zTitle]="infoTitle" />
+          <ng-template #infoTitle>
+            <span class="card-title-row">
+              <ng-icon name="lucideUser" class="title-icon" />
+              Personal information
+            </span>
+          </ng-template>
+          <z-card-description zDescription="Your name is shown in the app. Changes are saved when you click Save." />
+        </z-card-header>
 
-      <z-card-footer>
-        <button z-button (click)="save()" [disabled]="form.invalid || loading() || saving()" [zLoading]="saving()">
-          @if (!saving()) {
-            <ng-icon name="lucideSave" />
+        <z-card-content>
+          @if (loading() && !user()) {
+            <div class="skeleton-form"></div>
+          } @else {
+            <form [formGroup]="form" (ngSubmit)="save()" class="profile-form" id="profile-form">
+              <div class="field">
+                <label class="field-label" for="profile-name">Display name</label>
+                <input
+                  id="profile-name"
+                  class="mash-input"
+                  type="text"
+                  formControlName="name"
+                  autocomplete="name"
+                  placeholder="Your name"
+                  [attr.aria-invalid]="form.controls.name.invalid && form.controls.name.touched"
+                  aria-describedby="profile-name-help"
+                />
+                @if (form.controls.name.invalid && (form.controls.name.touched || form.controls.name.dirty)) {
+                  <span class="field-error" id="profile-name-help">Your name needs at least 2 characters.</span>
+                } @else {
+                  <span class="field-help" id="profile-name-help">At least 2 characters.</span>
+                }
+              </div>
+
+              <div class="field">
+                <span class="field-label">Email</span>
+                <div class="readonly-value">
+                  <ng-icon name="lucideMail" />
+                  <span>{{ user()?.email ?? auth.currentUser()?.email }}</span>
+                  <ng-icon name="lucideLock" class="lock-icon" />
+                </div>
+                <span class="field-help">Used to sign in. It cannot be changed.</span>
+              </div>
+            </form>
           }
-          Save Changes
-        </button>
-      </z-card-footer>
-    </z-card>
+        </z-card-content>
+
+        <z-card-footer class="form-actions">
+          @if (form.dirty) {
+            <button z-button zType="ghost" type="button" (click)="cancel()" [zDisabled]="saving()">Cancel</button>
+          }
+          <button
+            z-button
+            type="submit"
+            form="profile-form"
+            [zDisabled]="form.invalid || form.pristine || loading() || saving()"
+            [zLoading]="saving()"
+          >
+            @if (!saving()) {
+              <ng-icon name="lucideSave" />
+            }
+            Save changes
+          </button>
+        </z-card-footer>
+      </z-card>
+
+      <z-card>
+        <z-card-header>
+          <z-card-title zTitle="Session" />
+          <z-card-description zDescription="You are signed in on this device." />
+        </z-card-header>
+        <z-card-content class="session-row">
+          <p>Signing out removes your session from this browser. Your tracks stay in your library.</p>
+          <button z-button zType="outline" type="button" (click)="logout()" class="logout-btn">
+            <ng-icon name="lucideLogOut" /> Sign out
+          </button>
+        </z-card-content>
+      </z-card>
+    </div>
   </div>
 </section>

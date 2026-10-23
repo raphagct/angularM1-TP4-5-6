@@ -5,85 +5,119 @@
     <p class="hero-sub">Import, organize and listen to your tracks.</p>
   </div>
 
-  <div class="grid">
+  <div class="page-grid">
     <!-- ═══ Upload Panel ═══ -->
     <z-card class="upload-card">
       <z-card-header>
-        <z-card-title>
-          <div class="card-title-row">
+        <!-- z-card-title does not project content: the title goes through zTitle. -->
+        <z-card-title [zTitle]="uploadTitle" />
+        <ng-template #uploadTitle>
+          <span class="card-title-row">
             <ng-icon name="lucideUpload" class="title-icon" />
-            <span>Upload</span>
-          </div>
-        </z-card-title>
-        <z-card-description>Import an audio file (25 Mo max)</z-card-description>
+            Add a track
+          </span>
+        </ng-template>
+        <z-card-description zDescription="The title, artist, album and cover are read from your file." />
       </z-card-header>
 
-      <z-card-content class="upload-content">
-        <div class="details-row">
-          <div class="cover-picker">
-            @if (coverPreview()) {
-              <img [src]="coverPreview()" alt="Aperçu de la pochette" class="cover-preview" />
-              <button type="button" class="cover-remove" (click)="removeCover()" [disabled]="uploading()" aria-label="Retirer la pochette">
-                <ng-icon name="lucideX" />
-              </button>
-            } @else {
-              <label class="cover-empty">
-                <ng-icon name="lucideImagePlus" />
-                <span>Cover</span>
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  class="sr-only"
-                  (change)="chooseCover($event)"
-                  [disabled]="uploading()"
-                  aria-label="Choisir une pochette"
-                />
-              </label>
-            }
+      <z-card-content
+        class="upload-content"
+        (dragover)="onDragOver($event)"
+        (dragleave)="onDragLeave($event)"
+        (drop)="onDrop($event)"
+      >
+        <!-- Details: filled from the file tags, read-only unless the user clicks Edit -->
+        <section class="details" aria-labelledby="details-title">
+          <div class="details-head">
+            <h3 id="details-title">Track details</h3>
+            <button type="button" class="edit-btn" (click)="toggleEditing()" [disabled]="!file() || readingTags() || uploading()">
+              @if (editing()) {
+                <ng-icon name="lucideCheck" /> Done
+              } @else {
+                <ng-icon name="lucidePencil" /> Edit
+              }
+            </button>
           </div>
 
-          <div class="details-fields">
-            <label class="input-label" for="track-title">Title</label>
-            <input id="track-title" class="mash-input" [formControl]="title" placeholder="Read from tags if empty" />
-            <label class="input-label" for="track-artist">Artist</label>
-            <input id="track-artist" class="mash-input" [formControl]="form.controls.artist" placeholder="Artist..." />
-          </div>
-        </div>
+          <div class="details-row">
+            <div class="cover-box" [class.skeleton]="readingTags()">
+              @if (coverPreview()) {
+                <img [src]="coverPreview()" alt="Pochette lue dans le fichier" class="cover-preview" />
+              } @else if (!readingTags()) {
+                <div class="cover-none">
+                  <ng-icon name="lucideImageOff" />
+                  <span>{{ file() ? 'No cover' : 'Cover' }}</span>
+                </div>
+              }
+            </div>
 
-        <div class="fields-row">
-          <div>
-            <label class="input-label" for="track-album">Album</label>
-            <input id="track-album" class="mash-input" [formControl]="form.controls.album" placeholder="Album..." />
+            <div class="details-fields">
+              <label class="input-label" for="track-title">Title</label>
+              <input id="track-title" class="mash-input" [formControl]="title" [readOnly]="!editing()" [class.locked]="!editing()"
+                [placeholder]="readingTags() ? 'Reading tags...' : 'Filled from your file'" />
+              <label class="input-label" for="track-artist">Artist</label>
+              <input id="track-artist" class="mash-input" [formControl]="form.controls.artist" [readOnly]="!editing()" [class.locked]="!editing()"
+                [placeholder]="file() && !readingTags() ? 'Unknown artist' : 'Filled from your file'" />
+            </div>
           </div>
-          <div>
-            <label class="input-label" for="track-genre">Genre</label>
-            <input id="track-genre" class="mash-input" [formControl]="form.controls.genre" placeholder="Genre..." />
-          </div>
-        </div>
-        <p class="form-hint">Empty fields and the cover are filled from the file tags when available.</p>
 
-        <div
-          class="dropzone"
-          [class.dragging]="isDragging()"
-          (dragover)="onDragOver($event)"
-          (dragleave)="onDragLeave($event)"
-          (drop)="onDrop($event)"
-        >
-          <ng-icon name="lucideUpload" class="dropzone-icon" />
-          @if (file) {
-            <p class="dropzone-text">{{ file.name }}</p>
-            <p class="dropzone-hint">{{ (file.size / 1024 / 1024).toFixed(1) }} Mo</p>
-          } @else {
-            <p class="dropzone-text">Drag & drop your file</p>
-            <p class="dropzone-hint">or click to browse</p>
+          <label class="input-label" for="track-album">Album</label>
+          <input id="track-album" class="mash-input" [formControl]="form.controls.album" [readOnly]="!editing()" [class.locked]="!editing()"
+            [placeholder]="file() && !readingTags() ? 'Unknown album' : 'Filled from your file'" />
+
+          @if (file(); as file) {
+            <dl class="info-grid" aria-label="Informations du fichier">
+              <div><dt>Format</dt><dd>{{ formatOf(file) }}</dd></div>
+              <div><dt>Duration</dt><dd>{{ audioInfo()?.duration | duration }}</dd></div>
+              <div><dt>Size</dt><dd>{{ (file.size / 1024 / 1024).toFixed(1) }} Mo</dd></div>
+              <div><dt>Bitrate</dt><dd>{{ audioInfo()?.bitrate ? (audioInfo()!.bitrate! / 1000 | number:'1.0-0') + ' kb/s' : '–' }}</dd></div>
+            </dl>
           }
-          <input
-            type="file"
-            accept="audio/*"
-            class="dropzone-input"
-            (change)="choose($event)"
-            [disabled]="uploading()"
-          />
+
+          @if (readingTags()) {
+            <p class="details-note">Reading the file tags...</p>
+          } @else if (detailsSource() === 'tags') {
+            <p class="details-note">
+              <ng-icon name="lucideCheck" class="note-ok" />
+              Read from the file tags. Click Edit to change them.
+            </p>
+          } @else if (detailsSource() === 'filename') {
+            <p class="details-note warn">
+              <ng-icon name="lucideCircleAlert" />
+              No tags in this file: the title comes from its name. Click Edit to complete it.
+            </p>
+          }
+        </section>
+
+        <!-- Audio file: drag-and-drop or file explorer -->
+        <div class="dropzone" [class.dragging]="isDragging()" [class.has-file]="!!file()">
+          @if (file(); as file) {
+            <ng-icon name="lucideFileAudio" class="file-row-icon" />
+            <div class="file-row-info">
+              <span class="file-row-name">{{ file.name }}</span>
+              <span class="file-row-meta">
+                @if (isDragging()) { Drop to replace this file } @else { Drop another file here to replace it }
+              </span>
+            </div>
+            <label class="file-row-action" [class.disabled]="uploading()">
+              Change
+              <input type="file" accept="audio/*" class="sr-only" (change)="choose($event)" [disabled]="uploading()" aria-label="Choisir un autre fichier audio" />
+            </label>
+            <button type="button" class="icon-btn" (click)="clearFile()" [disabled]="uploading()" aria-label="Retirer le fichier">
+              <ng-icon name="lucideX" />
+            </button>
+          } @else {
+            <ng-icon name="lucideFileAudio" class="dropzone-icon" />
+            <p class="dropzone-text">
+              @if (isDragging()) { Drop it here! } @else { Drag & drop an audio file here }
+            </p>
+            <label class="browse-btn">
+              <ng-icon name="lucideFolderOpen" />
+              Browse files
+              <input type="file" accept="audio/*" class="sr-only" (change)="choose($event)" aria-label="Choisir un fichier audio" />
+            </label>
+            <p class="dropzone-hint">MP3, WAV, OGG or M4A · 25 Mo max</p>
+          }
         </div>
 
         @if (uploading()) {
@@ -94,7 +128,10 @@
         }
 
         @if (uploadError()) {
-          <z-badge zType="destructive" class="msg-badge">{{ uploadError() }}</z-badge>
+          <p class="upload-error" role="alert">
+            <ng-icon name="lucideCircleAlert" />
+            {{ uploadError() }}
+          </p>
         }
         @if (uploadSuccess()) {
           <z-badge zType="outline" class="msg-badge success">{{ uploadSuccess() }}</z-badge>
@@ -102,12 +139,14 @@
       </z-card-content>
 
       <z-card-footer>
-        <button z-button (click)="upload()" [disabled]="!file || uploading()" [zLoading]="uploading()">
+        <button z-button class="upload-btn" (click)="upload()" [zDisabled]="!file() || uploading() || readingTags()" [zLoading]="uploading()">
           @if (uploading()) {
             Uploading...
+          } @else if (!file()) {
+            Choose a file first
           } @else {
             <ng-icon name="lucideUpload" />
-            Upload
+            Add to my library
           }
         </button>
       </z-card-footer>
@@ -182,7 +221,7 @@
             <button z-button zType="default" zSize="sm" zShape="circle" (click)="play(track)" [attr.aria-label]="'Play ' + track.title">
               <ng-icon name="lucidePlay" />
             </button>
-            <button z-button zType="ghost" zSize="sm" zShape="circle" (click)="confirmDelete(track)" [disabled]="deleting().has(track.id)" [attr.aria-label]="'Delete ' + track.title" class="delete-btn">
+            <button z-button zType="ghost" zSize="sm" zShape="circle" (click)="confirmDelete(track)" [zDisabled]="deleting().has(track.id)" [attr.aria-label]="'Delete ' + track.title" class="delete-btn">
               @if (deleting().has(track.id)) {
                 <ng-icon name="lucideRefreshCw" class="animate-spin" />
               } @else {
@@ -204,11 +243,11 @@
       <!-- Pagination -->
       @if (total() > limit()) {
         <div class="pagination">
-          <button z-button zType="ghost" zSize="sm" (click)="go(page() - 1)" [disabled]="page() <= 1">
+          <button z-button zType="ghost" zSize="sm" (click)="go(page() - 1)" [zDisabled]="page() <= 1">
             <ng-icon name="lucideChevronLeft" />
           </button>
           <span class="page-info">{{ page() }} / {{ totalPages }}</span>
-          <button z-button zType="ghost" zSize="sm" (click)="go(page() + 1)" [disabled]="page() >= totalPages">
+          <button z-button zType="ghost" zSize="sm" (click)="go(page() + 1)" [zDisabled]="page() >= totalPages">
             <ng-icon name="lucideChevronRight" />
           </button>
         </div>

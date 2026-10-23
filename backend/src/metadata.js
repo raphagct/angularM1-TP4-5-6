@@ -1,7 +1,4 @@
-import fsPromises from "node:fs/promises";
-import path from "node:path";
-import crypto from "node:crypto";
-import { parseFile } from "music-metadata";
+import { parseBuffer } from "music-metadata";
 
 /*
  * music-metadata lit les tags d'un fichier audio (ID3 pour le MP3, Vorbis
@@ -67,31 +64,20 @@ export function normalizeMetadata(raw) {
 }
 
 /**
- * Lit les métadonnées d'un fichier. Un fichier sans tags ou mal formé ne doit
- * pas faire échouer l'upload : l'erreur est journalisée et un objet vide est
- * retourné. Le parser est injectable pour les tests.
+ * Lit les métadonnées d'un fichier reçu en mémoire. Un fichier sans tags ou
+ * mal formé ne doit pas faire échouer l'upload : l'erreur est journalisée et
+ * un objet vide est retourné. Le parser est injectable pour les tests.
  */
-export async function extractMetadata(filePath, parse = parseFile) {
+export async function extractMetadata(buffer, mimeType, parse = parseBuffer) {
   try {
-    const raw = await parse(filePath, { duration: true });
+    const raw = await parse(buffer, { mimeType }, { duration: true });
     const metadata = normalizeMetadata(raw);
     console.log(
       `[metadata] Tags lus : titre=${metadata.title ?? "-"}, artiste=${metadata.artist ?? "-"}, pochette=${Boolean(metadata.picture)}`,
     );
     return metadata;
   } catch (error) {
-    console.error(`[metadata] Lecture des tags impossible pour ${filePath}`, error);
+    console.error("[metadata] Lecture des tags impossible", error);
     return normalizeMetadata(null);
   }
-}
-
-/**
- * Écrit la pochette intégrée au fichier audio dans le dossier des pochettes.
- * Le nom est aléatoire, comme pour les fichiers audio.
- */
-export async function saveEmbeddedCover(coversDir, picture) {
-  const storedName = crypto.randomUUID() + IMAGE_EXTENSIONS[picture.mimeType];
-  await fsPromises.writeFile(path.join(coversDir, storedName), picture.data);
-  console.log(`[metadata] Pochette intégrée enregistrée : ${storedName}`);
-  return { storedName, mimeType: picture.mimeType };
 }

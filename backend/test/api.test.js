@@ -1,8 +1,5 @@
 import test, { describe, mock } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -10,12 +7,13 @@ import { createApp } from "../src/app.js";
 import { User } from "../src/models/User.js";
 import { Track } from "../src/models/Track.js";
 import { silentMp3, withId3, TINY_PNG } from "./helpers/audio.js";
+import { createMemoryStorage } from "./helpers/memory-storage.js";
 
 /*
  * Ces tests démarrent la vraie application Express sur un port aléatoire,
  * mais remplacent les méthodes Mongoose par des simulations (mock.method) :
- * aucune base MongoDB n'est nécessaire. Les fichiers sont écrits dans un
- * dossier temporaire grâce à createApp({ uploadsDir }).
+ * aucune base MongoDB n'est nécessaire. GridFS est remplacé par un stockage
+ * en mémoire grâce à createApp({ storage }).
  */
 
 const SECRET = process.env.JWT_SECRET || "tp1-development-secret";
@@ -25,7 +23,8 @@ const bearer = (sub = userId) => ({
   Authorization: `Bearer ${jwt.sign({ sub, email: "u@test.dev" }, SECRET, { expiresIn: "1h" })}`,
 });
 
-let server, base, uploadsDir, coversDir;
+let server, base;
+const storage = createMemoryStorage();
 
 /** Simule une requête Mongoose chaînable (select, sort, lean...) et awaitable. */
 function query(result) {
@@ -43,9 +42,12 @@ const json = (body) => ({
   body: JSON.stringify(body),
 });
 
-async function listFiles(dir) {
-  return (await fs.readdir(dir, { withFileTypes: true })).filter((e) => e.isFile()).map((e) => e.name);
-}
+/** Contenu d'un fichier du stockage simulé. */
+const stored = (id) => storage.files.get(String(id))?.data;
+
+/** Ajoute directement un fichier au stockage simulé et retourne son identifiant. */
+const seed = (data, contentType = "audio/mpeg") =>
+  storage.save(Buffer.from(data), { filename: "seed", contentType });
 
 /** Construit le multipart d'un upload. */
 function uploadForm({ audio = silentMp3(), audioType = "audio/mpeg", cover, coverType = "image/png", fields = {} } = {}) {
@@ -60,28 +62,24 @@ const post = (form, headers = bearer()) =>
   fetch(base + "/api/tracks", { method: "POST", headers, body: form });
 
 test.before(async () => {
-  uploadsDir = await fs.mkdtemp(path.join(os.tmpdir(), "gpc-api-"));
-  coversDir = path.join(uploadsDir, "covers");
-  server = createApp({ uploadsDir }).listen(0);
+  server = createApp({ storage }).listen(0);
   await new Promise((r) => server.once("listening", r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
 test.after(async () => {
   server.close();
-  await fs.rm(uploadsDir, { recursive: true, force: true });
 });
 
-test.afterEach(() => mock.restoreAll());
+test.afterEach(() => {
+  mock.restoreAll();
+  storage.files.clear();
+});
 
 test("health sans dépendre de MongoDB", async () => {
   const r = await fetch(base + "/api/health");
   assert.equal(r.status, 200);
   assert.equal((await r.json()).status, "ok");
-});
-
-test("createApp crée le dossier des pochettes", async () => {
-  assert.ok((await fs.stat(coversDir)).isDirectory());
 });
 
 describe("middleware auth", () => {
@@ -262,11 +260,11 @@ describe("POST /api/tracks", () => {
     assert.equal(r.status, 401);
   });
 
-  test("400 sans fichier audio, et la pochette seule est supprimée", async () => {
+  test("400 sans fichier audio, et la pochette seule n'est pas enregistrée", async () => {
     const r = await post(uploadForm({ audio: null, cover: TINY_PNG }));
     assert.equal(r.status, 400);
     assert.equal((await r.json()).message, "Fichier audio requis");
-    assert.deepEqual(await listFiles(coversDir), []);
+    assert.equal(storage.files.size, 0);
   });
 
   test("400 pour un format audio refusé", async () => {
@@ -281,12 +279,10 @@ describe("POST /api/tracks", () => {
     assert.equal((await r.json()).message, "Format d'image non accepté");
   });
 
-  test("400 si la pochette dépasse 5 Mo et les fichiers sont nettoyés", async () => {
-    const before = await listFiles(uploadsDir);
+  test("400 si la pochette dépasse 5 Mo, sans rien enregistrer", async () => {
     const r = await post(uploadForm({ cover: Buffer.alloc(5 * 1024 * 1024 + 1) }));
     assert.equal(r.status, 400);
-    assert.deepEqual(await listFiles(uploadsDir), before);
-    assert.deepEqual(await listFiles(coversDir), []);
+    assert.equal(storage.files.size, 0);
   });
 
   test("201 : lit les tags ID3 et extrait la pochette intégrée", async () => {
@@ -311,13 +307,14 @@ describe("POST /api/tracks", () => {
     assert.equal(body.hasCover, true);
     assert.ok(body.duration > 0);
     assert.equal(body.sampleRate, 44100);
-    assert.equal(body.coverStoredName, undefined);
+    assert.equal(body.fileId, undefined);
+    assert.equal(body.coverFileId, undefined);
 
     const saved = create.mock.calls[0].arguments[0];
     assert.equal(saved.ownerId, userId);
     assert.equal(saved.coverMimeType, "image/png");
-    assert.deepEqual(await fs.readFile(path.join(coversDir, saved.coverStoredName)), TINY_PNG);
-    assert.ok(await fs.stat(path.join(uploadsDir, saved.storedName)));
+    assert.deepEqual(stored(saved.coverFileId), TINY_PNG);
+    assert.deepEqual(stored(saved.fileId), audio);
   });
 
   test("201 : les champs saisis et la pochette envoyée sont prioritaires sur les tags", async () => {
@@ -342,8 +339,8 @@ describe("POST /api/tracks", () => {
     assert.equal(body.genre, "Blues");
 
     const saved = create.mock.calls[0].arguments[0];
-    assert.match(saved.coverStoredName, /\.png$/);
-    assert.deepEqual(await fs.readFile(path.join(coversDir, saved.coverStoredName)), TINY_PNG);
+    assert.equal(saved.coverMimeType, "image/png");
+    assert.deepEqual(stored(saved.coverFileId), TINY_PNG);
   });
 
   test("201 : sans titre ni tag, le nom du fichier est utilisé", async () => {
@@ -356,18 +353,15 @@ describe("POST /api/tracks", () => {
     assert.equal(body.hasCover, false);
   });
 
-  test("si MongoDB échoue, l'audio et la pochette sont supprimés du disque", async () => {
+  test("si la création de la piste échoue, l'audio et la pochette sont supprimés de GridFS", async () => {
     mock.method(Track, "create", async () => {
       throw new Error("Mongo down");
     });
-    const audioBefore = await listFiles(uploadsDir);
-    const coversBefore = await listFiles(coversDir);
     const audio = withId3(silentMp3(), { picture: { mime: "image/png", data: TINY_PNG } });
 
     const r = await post(uploadForm({ audio }));
     assert.equal(r.status, 500);
-    assert.deepEqual(await listFiles(uploadsDir), audioBefore);
-    assert.deepEqual(await listFiles(coversDir), coversBefore);
+    assert.equal(storage.files.size, 0);
   });
 });
 
@@ -393,7 +387,7 @@ describe("GET /api/tracks/:id", () => {
       title: "One",
       artist: "Someone",
       originalName: "one.mp3",
-      storedName: "secret.mp3",
+      fileId: new mongoose.Types.ObjectId(),
       mimeType: "audio/mpeg",
       size: 10,
       duration: 61,
@@ -405,7 +399,7 @@ describe("GET /api/tracks/:id", () => {
     assert.equal(body.id, trackId);
     assert.equal(body.artist, "Someone");
     assert.equal(body.duration, 61);
-    assert.equal(body.storedName, undefined);
+    assert.equal(body.fileId, undefined);
   });
 });
 
@@ -424,15 +418,22 @@ describe("GET /api/tracks/:id/cover", () => {
     assert.equal((await r.json()).message, "Pochette absente");
   });
 
+  test("404 si la pochette n'est pas dans GridFS", async () => {
+    const coverFileId = new mongoose.Types.ObjectId();
+    mock.method(Track, "findOne", () => query({ id: trackId, coverFileId, coverMimeType: "image/png" }));
+    const r = await fetch(`${base}/api/tracks/${trackId}/cover`, { headers: bearer() });
+    assert.equal(r.status, 404);
+    assert.equal((await r.json()).message, "Pochette absente");
+  });
+
   test("200 avec l'image et son type MIME", async () => {
-    await fs.writeFile(path.join(coversDir, "c.png"), TINY_PNG);
-    mock.method(Track, "findOne", () => query({ id: trackId, coverStoredName: "c.png", coverMimeType: "image/png" }));
+    const coverFileId = await seed(TINY_PNG, "image/png");
+    mock.method(Track, "findOne", () => query({ id: trackId, coverFileId, coverMimeType: "image/png" }));
     const r = await fetch(`${base}/api/tracks/${trackId}/cover`, { headers: bearer() });
     assert.equal(r.status, 200);
     assert.equal(r.headers.get("content-type"), "image/png");
     assert.match(r.headers.get("cache-control"), /private/);
     assert.deepEqual(Buffer.from(await r.arrayBuffer()), TINY_PNG);
-    await fs.rm(path.join(coversDir, "c.png"));
   });
 
   test("401 sans token", async () => {
@@ -444,20 +445,38 @@ describe("GET /api/tracks/:id/cover", () => {
 describe("GET /api/tracks/:id/audio", () => {
   test("200 avec le flux audio", async () => {
     const audio = silentMp3(4);
-    await fs.writeFile(path.join(uploadsDir, "a.mp3"), audio);
-    mock.method(Track, "findOne", () => query({ id: trackId, storedName: "a.mp3", mimeType: "audio/mpeg" }));
+    const fileId = await seed(audio);
+    mock.method(Track, "findOne", () => query({ id: trackId, fileId, mimeType: "audio/mpeg" }));
     const r = await fetch(`${base}/api/tracks/${trackId}/audio`, { headers: bearer() });
     assert.equal(r.status, 200);
     assert.equal(r.headers.get("content-type"), "audio/mpeg");
+    assert.equal(r.headers.get("content-length"), String(audio.length));
+    assert.equal(r.headers.get("accept-ranges"), "bytes");
     assert.deepEqual(Buffer.from(await r.arrayBuffer()), audio);
   });
 
   test("206 pour une requête Range (lecture partielle)", async () => {
-    await fs.writeFile(path.join(uploadsDir, "a.mp3"), silentMp3(4));
-    mock.method(Track, "findOne", () => query({ id: trackId, storedName: "a.mp3", mimeType: "audio/mpeg" }));
-    const r = await fetch(`${base}/api/tracks/${trackId}/audio`, { headers: { ...bearer(), Range: "bytes=0-9" } });
+    const audio = silentMp3(4);
+    const fileId = await seed(audio);
+    mock.method(Track, "findOne", () => query({ id: trackId, fileId, mimeType: "audio/mpeg" }));
+    const r = await fetch(`${base}/api/tracks/${trackId}/audio`, { headers: { ...bearer(), Range: "bytes=5-14" } });
     assert.equal(r.status, 206);
-    assert.equal((await r.arrayBuffer()).byteLength, 10);
+    assert.equal(r.headers.get("content-range"), `bytes 5-14/${audio.length}`);
+    assert.deepEqual(Buffer.from(await r.arrayBuffer()), audio.subarray(5, 15));
+  });
+
+  test("416 pour une plage hors du fichier", async () => {
+    const fileId = await seed(silentMp3(1));
+    mock.method(Track, "findOne", () => query({ id: trackId, fileId, mimeType: "audio/mpeg" }));
+    const r = await fetch(`${base}/api/tracks/${trackId}/audio`, { headers: { ...bearer(), Range: "bytes=99999-" } });
+    assert.equal(r.status, 416);
+  });
+
+  test("404 si le fichier n'est pas dans GridFS (piste non migrée)", async () => {
+    mock.method(Track, "findOne", () => query({ id: trackId, mimeType: "audio/mpeg" }));
+    const r = await fetch(`${base}/api/tracks/${trackId}/audio`, { headers: bearer() });
+    assert.equal(r.status, 404);
+    assert.equal((await r.json()).message, "Fichier audio indisponible");
   });
 
   test("404 si la piste est inconnue", async () => {
@@ -469,21 +488,28 @@ describe("GET /api/tracks/:id/audio", () => {
 
 describe("DELETE /api/tracks/:id", () => {
   test("204 et suppression de l'audio et de la pochette", async () => {
-    await fs.writeFile(path.join(uploadsDir, "del.mp3"), "x");
-    await fs.writeFile(path.join(coversDir, "del.png"), "x");
+    const fileId = await seed("x");
+    const coverFileId = await seed("x", "image/png");
     const remove = mock.method(Track, "findOneAndDelete", () =>
-      query({ id: trackId, storedName: "del.mp3", coverStoredName: "del.png" }),
+      query({ id: trackId, fileId, coverFileId }),
     );
 
     const r = await fetch(`${base}/api/tracks/${trackId}`, { method: "DELETE", headers: bearer() });
     assert.equal(r.status, 204);
     assert.deepEqual(remove.mock.calls[0].arguments[0], { _id: trackId, ownerId: userId });
-    await assert.rejects(fs.stat(path.join(uploadsDir, "del.mp3")));
-    await assert.rejects(fs.stat(path.join(coversDir, "del.png")));
+    assert.equal(storage.files.size, 0);
+  });
+
+  test("204 pour une piste sans fichier GridFS (créée avant la migration)", async () => {
+    mock.method(Track, "findOneAndDelete", () => query({ id: trackId }));
+    const r = await fetch(`${base}/api/tracks/${trackId}`, { method: "DELETE", headers: bearer() });
+    assert.equal(r.status, 204);
   });
 
   test("500 si le fichier audio ne peut pas être supprimé", async () => {
-    mock.method(Track, "findOneAndDelete", () => query({ id: trackId, storedName: "absent.mp3" }));
+    mock.method(Track, "findOneAndDelete", () =>
+      query({ id: trackId, fileId: new mongoose.Types.ObjectId() }),
+    );
     const r = await fetch(`${base}/api/tracks/${trackId}`, { method: "DELETE", headers: bearer() });
     assert.equal(r.status, 500);
   });

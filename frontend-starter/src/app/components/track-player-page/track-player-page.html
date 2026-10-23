@@ -57,15 +57,15 @@
           zSize="icon-lg"
           class="play-btn"
           (click)="toggle()"
-          [disabled]="!audioUrl()"
+          [zDisabled]="!audioUrl()"
           [attr.aria-label]="playing() ? 'Pause' : 'Play'"
         >
           <ng-icon [name]="playing() ? 'lucidePause' : 'lucidePlay'" />
         </button>
-        <button z-button zType="ghost" zSize="icon-sm" zShape="circle" (click)="skip(-10)" [disabled]="!audioUrl()" aria-label="Reculer de 10 secondes">
+        <button z-button zType="ghost" zSize="icon-sm" zShape="circle" (click)="skip(-10)" [zDisabled]="!audioUrl()" aria-label="Reculer de 10 secondes">
           <ng-icon name="lucideRotateCcw" />
         </button>
-        <button z-button zType="ghost" zSize="icon-sm" zShape="circle" (click)="skip(10)" [disabled]="!audioUrl()" aria-label="Avancer de 10 secondes">
+        <button z-button zType="ghost" zSize="icon-sm" zShape="circle" (click)="skip(10)" [zDisabled]="!audioUrl()" aria-label="Avancer de 10 secondes">
           <ng-icon name="lucideRotateCw" />
         </button>
 

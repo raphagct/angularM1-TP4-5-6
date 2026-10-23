@@ -8,7 +8,7 @@ const baseTrack = () => ({
   ownerId: new mongoose.Types.ObjectId(),
   title: "Blues",
   originalName: "b.mp3",
-  storedName: "x.mp3",
+  fileId: new mongoose.Types.ObjectId(),
   mimeType: "audio/mpeg",
   size: 42,
 });
@@ -50,9 +50,9 @@ describe("Track", () => {
     assert.equal(Track.schema.path("ownerId").options.ref, "User");
   });
 
-  test("les noms de stockage sont masqués par défaut", () => {
-    assert.equal(Track.schema.path("storedName").options.select, false);
-    assert.equal(Track.schema.path("coverStoredName").options.select, false);
+  test("les identifiants de stockage sont masqués par défaut", () => {
+    assert.equal(Track.schema.path("fileId").options.select, false);
+    assert.equal(Track.schema.path("coverFileId").options.select, false);
   });
 
   test("une piste minimale est valide", async () => {
@@ -61,7 +61,7 @@ describe("Track", () => {
 
   test("refuse les champs obligatoires manquants et une taille négative", async () => {
     await assert.rejects(new Track({ size: -1 }).validate(), (error) => {
-      for (const field of ["ownerId", "title", "originalName", "storedName", "mimeType", "size"]) {
+      for (const field of ["ownerId", "title", "originalName", "fileId", "mimeType", "size"]) {
         assert.ok(error.errors[field], field);
       }
       return true;
@@ -72,7 +72,7 @@ describe("Track", () => {
     await assert.rejects(new Track({ ...baseTrack(), artist: "x".repeat(201) }).validate(), /artist/);
   });
 
-  test("toPublic expose les métadonnées et hasCover, jamais les noms de stockage", () => {
+  test("toPublic expose les métadonnées et hasCover, jamais les identifiants de stockage", () => {
     const track = new Track({
       ...baseTrack(),
       artist: "Artist",
@@ -82,7 +82,7 @@ describe("Track", () => {
       duration: 180,
       bitrate: 320000,
       sampleRate: 48000,
-      coverStoredName: "cover.png",
+      coverFileId: new mongoose.Types.ObjectId(),
       coverMimeType: "image/png",
     });
 
@@ -91,8 +91,8 @@ describe("Track", () => {
     assert.equal(output.artist, "Artist");
     assert.equal(output.duration, 180);
     assert.equal(output.hasCover, true);
-    assert.equal("storedName" in output, false);
-    assert.equal("coverStoredName" in output, false);
+    assert.equal("fileId" in output, false);
+    assert.equal("coverFileId" in output, false);
     assert.equal("coverMimeType" in output, false);
   });
 
