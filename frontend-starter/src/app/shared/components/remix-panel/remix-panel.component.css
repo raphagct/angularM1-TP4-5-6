@@ -1,0 +1,123 @@
+:host { display: block; }
+
+.remix {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem 1.5rem;
+  background: var(--card);
+  border: 1px solid oklch(0.75 0.2 145 / 15%);
+  border-radius: 16px;
+}
+
+.remix-header { display: grid; gap: 0.25rem; }
+.remix-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  color: #fff;
+  font-size: 1.1rem;
+}
+.remix-header ng-icon { color: oklch(0.75 0.2 145); }
+
+.hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+}
+
+.processing {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--foreground);
+  font-size: 0.9rem;
+}
+.pulse {
+  flex-shrink: 0;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: oklch(0.75 0.2 145);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.position { flex: 1; min-width: 0; accent-color: oklch(0.75 0.2 145); }
+.time {
+  color: var(--foreground);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mixer {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem 1.5rem;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+}
+.field-name { min-width: 5.5rem; color: var(--muted-foreground); font-weight: 600; }
+.field input { flex: 1; min-width: 0; accent-color: oklch(0.75 0.2 145); }
+.field-value { min-width: 3rem; text-align: right; font-variant-numeric: tabular-nums; }
+.field select {
+  flex: 1;
+  min-width: 0;
+  height: 2rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--secondary);
+  color: var(--foreground);
+  font: inherit;
+}
+
+.save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid oklch(1 0 0 / 8%);
+}
+.save .field { flex: 1 1 280px; }
+.title-input {
+  height: 2rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--secondary);
+  color: var(--foreground);
+  font: inherit;
+}
+.saved-link {
+  color: oklch(0.75 0.2 145);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.error-box {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: oklch(0.577 0.245 27 / 10%);
+  color: oklch(0.65 0.2 25);
+  font-size: 0.85rem;
+  border: 1px solid oklch(0.577 0.245 27 / 20%);
+}
+
+@media (max-width: 640px) {
+  .remix { padding: 1rem; }
+}

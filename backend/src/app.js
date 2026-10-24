@@ -7,6 +7,7 @@ import { User } from "./models/User.js";
 import { Track } from "./models/Track.js";
 import { extractMetadata, pickText, IMAGE_EXTENSIONS } from "./metadata.js";
 import { createGridFsStorage } from "./storage.js";
+import { createDemucsSeparator } from "./separation.js";
 
 // Les fichiers audio et les pochettes sont stockés dans MongoDB (GridFS) :
 // tous les backends branchés sur la même base Atlas y ont accès.
@@ -98,6 +99,39 @@ function sendStream(stream, res, next, label) {
   stream.pipe(res);
 }
 
+/**
+ * Envoie un fichier audio GridFS de `length` octets en respectant l'en-tête
+ * Range (lecture partielle, ex. pour avancer dans le morceau).
+ */
+function sendAudio(storage, req, res, next, { fileId, length, mimeType, label }) {
+  res.type(mimeType);
+  res.set("Accept-Ranges", "bytes");
+
+  // req.range lit l'en-tête Range : -1 = plage impossible, -2 = en-tête mal formé.
+  let start = 0;
+  let end = length - 1;
+  const ranges = req.range(length);
+  if (ranges === -1) {
+    res.set("Content-Range", `bytes */${length}`);
+    return res.status(416).end();
+  }
+  if (Array.isArray(ranges) && ranges.type === "bytes") {
+    ({ start, end } = ranges[0]);
+    res.status(206).set("Content-Range", `bytes ${start}-${end}/${length}`);
+  }
+  res.set("Content-Length", String(end - start + 1));
+
+  // Dans GridFS, `end` est exclusif, d'où le + 1.
+  sendStream(storage.stream(fileId, { start, end: end + 1 }), res, next, label);
+}
+
+/** Lit entièrement un flux (fichier GridFS) dans un Buffer. */
+async function readAll(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
 /*
  * Multer transforme une requête HTTP multipart/form-data en données exploitables
  * par Express et traite les fichiers envoyés par un formulaire HTML.
@@ -138,7 +172,10 @@ function createUpload() {
  * Cette séparation permet au serveur réel et aux tests de créer la même
  * application. Le port est ouvert uniquement dans server.js.
  */
-export function createApp({ storage = createGridFsStorage() } = {}) {
+export function createApp({
+  storage = createGridFsStorage(),
+  separator = createDemucsSeparator(),
+} = {}) {
   const upload = createUpload();
   const app = express();
 
@@ -150,6 +187,46 @@ export function createApp({ storage = createGridFsStorage() } = {}) {
       console.error(`[tracks] Impossible de supprimer le fichier ${id}`, error);
     }
   }
+
+  /**
+   * Tâche de fond lancée après la réponse 202 : extrait la voix avec Demucs,
+   * l'enregistre dans GridFS puis passe la piste à "ready" (ou "failed").
+   * Retourne une promesse qui ne rejette jamais : toute erreur est loguée.
+   */
+  async function extractVocals(track) {
+    let vocalsFileId;
+    try {
+      const audio = await readAll(storage.stream(track.fileId));
+      const vocals = await separator.vocals(audio, track.mimeType);
+      vocalsFileId = await storage.save(vocals, {
+        filename: "vocals.mp3",
+        contentType: "audio/mpeg",
+      });
+
+      const updated = await Track.findOneAndUpdate(
+        { _id: track._id, vocalsStatus: "processing" },
+        { $set: { vocalsStatus: "ready", vocalsFileId } },
+      );
+      if (!updated) {
+        // La piste a été supprimée pendant la séparation : la voix serait orpheline.
+        console.warn(`[vocals] Piste supprimée pendant la séparation : ${track.id}`);
+        await removeQuietly(vocalsFileId);
+        return;
+      }
+      console.log(`[vocals] Voix prête pour la piste ${track.id}`);
+    } catch (error) {
+      console.error(`[vocals] Échec de la séparation pour la piste ${track.id}`, error);
+      if (vocalsFileId) await removeQuietly(vocalsFileId);
+      try {
+        await Track.updateOne({ _id: track._id }, { $set: { vocalsStatus: "failed" } });
+      } catch (updateError) {
+        console.error(`[vocals] Statut "failed" non enregistré : ${track.id}`, updateError);
+      }
+    }
+  }
+
+  // Exposé pour que les tests puissent attendre la fin de la tâche de fond.
+  app.locals.vocalsJobs = new Set();
 
   // Journaliser la fin de chaque requête permet de suivre méthode, URL,
   // statut et durée sans exposer les corps contenant des mots de passe.
@@ -493,33 +570,114 @@ export function createApp({ storage = createGridFsStorage() } = {}) {
         return res.status(404).json({ message: "Fichier audio indisponible" });
       }
 
-      res.type(track.mimeType);
-      res.set("Accept-Ranges", "bytes");
-
-      // req.range lit l'en-tête Range (lecture partielle, ex. pour avancer
-      // dans le morceau) : -1 = plage impossible, -2 = en-tête mal formé.
-      let start = 0;
-      let end = file.length - 1;
-      const ranges = req.range(file.length);
-      if (ranges === -1) {
-        res.set("Content-Range", `bytes */${file.length}`);
-        return res.status(416).end();
-      }
-      if (Array.isArray(ranges) && ranges.type === "bytes") {
-        ({ start, end } = ranges[0]);
-        res.status(206).set("Content-Range", `bytes ${start}-${end}/${file.length}`);
-      }
-      res.set("Content-Length", String(end - start + 1));
-
-      // Dans GridFS, `end` est exclusif, d'où le + 1.
-      sendStream(
-        storage.stream(track.fileId, { start, end: end + 1 }),
-        res,
-        next,
-        `audio ${track.id}`,
-      );
+      sendAudio(storage, req, res, next, {
+        fileId: track.fileId,
+        length: file.length,
+        mimeType: track.mimeType,
+        label: `audio ${track.id}`,
+      });
     } catch (error) {
       console.error("[tracks] Erreur de préparation du flux audio", error);
+      next(error);
+    }
+  });
+
+  /**
+   * Lance l'extraction de la voix avec Demucs. La séparation dure plusieurs
+   * minutes : la réponse 202 part tout de suite et le frontend suit
+   * vocalsStatus avec GET /api/tracks/:id.
+   */
+  app.post("/api/tracks/:id/vocals", auth, validId, async (req, res, next) => {
+    try {
+      const owned = { _id: req.params.id, ownerId: req.auth.sub };
+      // La condition sur le statut rend l'opération atomique : deux clics
+      // rapprochés ne lancent pas deux séparations.
+      const track = await Track.findOneAndUpdate(
+        { ...owned, vocalsStatus: { $nin: ["processing", "ready"] } },
+        { $set: { vocalsStatus: "processing" } },
+        { new: true },
+      ).select("+fileId");
+
+      if (!track) {
+        const existing = await Track.findOne(owned);
+        if (!existing) {
+          console.warn(`[vocals] Piste introuvable ou interdite : ${req.params.id}`);
+          return res.status(404).json({ message: "Piste inconnue" });
+        }
+        console.warn(`[vocals] Séparation déjà ${existing.vocalsStatus} : ${existing.id}`);
+        return res.status(409).json({
+          message:
+            existing.vocalsStatus === "ready"
+              ? "La voix a déjà été extraite"
+              : "Séparation déjà en cours",
+        });
+      }
+
+      console.log(`[vocals] Séparation demandée pour la piste ${track.id}`);
+      const job = extractVocals(track).finally(() => app.locals.vocalsJobs.delete(job));
+      app.locals.vocalsJobs.add(job);
+      res.status(202).json(track.toPublic());
+    } catch (error) {
+      console.error("[vocals] Erreur au lancement de la séparation", error);
+      next(error);
+    }
+  });
+
+  /** Envoie la voix isolée (MP3) d'une piste après vérification de sa propriété. */
+  app.get("/api/tracks/:id/vocals", auth, validId, async (req, res, next) => {
+    try {
+      const track = await Track.findOne({
+        _id: req.params.id,
+        ownerId: req.auth.sub,
+      }).select("+vocalsFileId");
+
+      if (!track) {
+        console.warn(`[vocals] Voix introuvable ou interdite : ${req.params.id}`);
+        return res.status(404).json({ message: "Piste inconnue" });
+      }
+
+      const file = track.vocalsFileId && (await storage.info(track.vocalsFileId));
+      if (!file) {
+        console.log(`[vocals] Pas de voix extraite pour la piste ${track.id}`);
+        return res.status(404).json({ message: "Voix non extraite" });
+      }
+
+      sendAudio(storage, req, res, next, {
+        fileId: track.vocalsFileId,
+        length: file.length,
+        mimeType: "audio/mpeg",
+        label: `voix ${track.id}`,
+      });
+    } catch (error) {
+      console.error("[vocals] Erreur de préparation du flux de la voix", error);
+      next(error);
+    }
+  });
+
+  /** Supprime la voix extraite pour libérer de la place ; la piste est conservée. */
+  app.delete("/api/tracks/:id/vocals", auth, validId, async (req, res, next) => {
+    try {
+      const owned = { _id: req.params.id, ownerId: req.auth.sub };
+      // Une séparation en cours écrirait sa voix après la suppression : elle est refusée.
+      const track = await Track.findOneAndUpdate(
+        { ...owned, vocalsStatus: { $ne: "processing" } },
+        { $set: { vocalsStatus: "none" }, $unset: { vocalsFileId: 1 } },
+      ).select("+vocalsFileId");
+
+      if (!track) {
+        if (await Track.exists(owned)) {
+          console.warn(`[vocals] Suppression refusée pendant la séparation : ${req.params.id}`);
+          return res.status(409).json({ message: "Séparation en cours" });
+        }
+        console.warn(`[vocals] Suppression impossible : ${req.params.id}`);
+        return res.status(404).json({ message: "Piste inconnue" });
+      }
+
+      if (track.vocalsFileId) await removeQuietly(track.vocalsFileId);
+      console.log(`[vocals] Voix supprimée pour la piste ${track.id}`);
+      res.status(204).end();
+    } catch (error) {
+      console.error("[vocals] Erreur de suppression de la voix", error);
       next(error);
     }
   });
@@ -530,16 +688,19 @@ export function createApp({ storage = createGridFsStorage() } = {}) {
       const track = await Track.findOneAndDelete({
         _id: req.params.id,
         ownerId: req.auth.sub,
-      }).select("+fileId +coverFileId");
+      }).select("+fileId +coverFileId +vocalsFileId");
 
       if (!track) {
         console.warn(`[tracks] Suppression impossible : ${req.params.id}`);
         return res.status(404).json({ message: "Piste inconnue" });
       }
 
-      // La pochette est secondaire : un échec est logué sans bloquer la suppression.
+      // La pochette et la voix sont secondaires : un échec est logué sans bloquer la suppression.
       if (track.coverFileId) {
         await removeQuietly(track.coverFileId);
+      }
+      if (track.vocalsFileId) {
+        await removeQuietly(track.vocalsFileId);
       }
 
       if (!track.fileId) {

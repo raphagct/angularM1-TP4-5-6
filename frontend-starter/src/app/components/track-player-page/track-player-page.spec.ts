@@ -7,6 +7,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TrackPlayerPageComponent } from './track-player-page';
 import { AudioAnalysisService } from '@/shared/services/audio-analysis.service';
 import { Track } from '@/shared/models/track.model';
+import { RemixPanelComponent } from '@/shared/components/remix-panel';
+import { By } from '@angular/platform-browser';
 
 describe('TrackPlayerPageComponent', () => {
   let harness: RouterTestingHarness;
@@ -302,5 +304,150 @@ describe('TrackPlayerPageComponent', () => {
     respond();
     await harness.navigateByUrl('/elsewhere');
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:audio-1');
+  });
+
+  it('ne joue jamais le lecteur et le remix en même temps', () => {
+    respond();
+    const remix = harness.fixture.debugElement.query(By.directive(RemixPanelComponent)).componentInstance as RemixPanelComponent;
+    const remixPause = vi.spyOn(remix, 'pause');
+
+    remix.started.emit();
+    expect(pause).toHaveBeenCalled();
+
+    audio().dispatchEvent(new Event('play'));
+    expect(remixPause).toHaveBeenCalled();
+  });
+
+  describe('effets', () => {
+    /** jsdom ne fournit pas la Web Audio API : on compte les contextes créés et fermés. */
+    const contexts: { close: ReturnType<typeof vi.fn>; wet: { value: number } }[] = [];
+    class FakeAudioContext {
+      sampleRate = 100;
+      state = 'running';
+      destination = {};
+      close = vi.fn(async () => undefined);
+      wet = { value: 0 };
+      private gains = 0;
+      constructor() {
+        contexts.push(this);
+      }
+      createMediaElementSource = () => ({ connect: (target: unknown) => target });
+      createConvolver = () => ({ connect: (target: unknown) => target });
+      // The second gain created by ReverbChain is the wet one.
+      createGain = () => ({ connect: (target: unknown) => target, gain: this.gains++ === 1 ? this.wet : { value: 0 } });
+      createBuffer = (channels: number, length: number) => ({
+        numberOfChannels: channels,
+        getChannelData: () => new Float32Array(length),
+      });
+    }
+
+    beforeEach(() => {
+      contexts.length = 0;
+      vi.stubGlobal('AudioContext', FakeAudioContext);
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    const range = (name: string) =>
+      [...harness.routeNativeElement!.querySelectorAll('label.effect')]
+        .find((label) => label.textContent?.includes(name))!
+        .querySelector('input') as HTMLInputElement;
+    const presetButton = (label: string) =>
+      [...harness.routeNativeElement!.querySelectorAll('.presets button')].find(
+        (button) => button.textContent?.trim() === label,
+      ) as HTMLButtonElement;
+
+    it('change la vitesse et, par défaut, la tonalité avec', () => {
+      respond();
+      const input = range('Vitesse');
+      input.value = '1.25';
+      input.dispatchEvent(new Event('input'));
+      harness.detectChanges();
+
+      expect(component.speed()).toBe(1.25);
+      expect(audio().playbackRate).toBe(1.25);
+      expect(audio().defaultPlaybackRate).toBe(1.25);
+      expect(audio().preservesPitch).toBe(false);
+      expect(text()).toContain('1.25×');
+    });
+
+    it('peut conserver la tonalité', () => {
+      respond();
+      const checkbox = harness.routeNativeElement!.querySelector('.pitch input') as HTMLInputElement;
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event('change'));
+      expect(component.keepPitch()).toBe(true);
+      expect(audio().preservesPitch).toBe(true);
+    });
+
+    it('ne passe par la Web Audio API qu’une fois la reverb activée', () => {
+      respond();
+      component.onLoadedMetadata();
+      expect(contexts).toHaveLength(0);
+
+      const input = range('Reverb');
+      input.value = '0.5';
+      input.dispatchEvent(new Event('input'));
+      harness.detectChanges();
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0].wet.value).toBe(0.5);
+      expect(text()).toContain('50 %');
+
+      // Le même élément audio ne peut être branché qu’une fois.
+      input.value = '0.2';
+      input.dispatchEvent(new Event('input'));
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0].wet.value).toBe(0.2);
+    });
+
+    it('applique les préréglages et met en avant celui qui est actif', () => {
+      respond();
+      presetButton('Slowed + reverb').click();
+      harness.detectChanges();
+
+      expect(component.speed()).toBe(0.85);
+      expect(component.reverb()).toBe(0.6);
+      expect(audio().playbackRate).toBe(0.85);
+      expect(component.activePreset()).toBe('Slowed + reverb');
+      expect(presetButton('Slowed + reverb').getAttribute('aria-pressed')).toBe('true');
+
+      presetButton('Original').click();
+      expect(component.speed()).toBe(1);
+      expect(contexts[0].wet.value).toBe(0);
+    });
+
+    it('n’affiche aucun préréglage actif pour un réglage personnalisé', () => {
+      respond();
+      const input = range('Vitesse');
+      input.value = '0.6';
+      input.dispatchEvent(new Event('input'));
+      expect(component.activePreset()).toBeNull();
+    });
+
+    it('garde les effets en changeant de piste et ferme l’ancien contexte', async () => {
+      respond();
+      component.applyPreset(component.presets[2]);
+      expect(contexts).toHaveLength(1);
+
+      await harness.navigateByUrl('/tracks/t2');
+      expect(contexts[0].close).toHaveBeenCalled();
+      respond('t2', { ...track, id: 't2' });
+      component.onLoadedMetadata();
+      expect(audio().playbackRate).toBe(0.85);
+      expect(contexts).toHaveLength(2);
+    });
+
+    it('ferme le contexte audio en quittant la page', async () => {
+      respond();
+      component.applyPreset(component.presets[2]);
+      await harness.navigateByUrl('/elsewhere');
+      expect(contexts[0].close).toHaveBeenCalled();
+    });
+
+    it('ignore la reverb si le navigateur ne fournit pas la Web Audio API', () => {
+      vi.stubGlobal('AudioContext', undefined);
+      respond();
+      expect(() => component.applyPreset(component.presets[2])).not.toThrow();
+      expect(audio().playbackRate).toBe(0.85);
+    });
   });
 });

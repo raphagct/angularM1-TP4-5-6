@@ -79,6 +79,40 @@
         </div>
       </div>
 
+      <div class="effects" role="group" aria-label="Effets audio">
+        <div class="presets">
+          <ng-icon name="lucideSparkles" class="effects-icon" />
+          @for (preset of presets; track preset.label) {
+            <button
+              z-button
+              zSize="sm"
+              [zType]="activePreset() === preset.label ? 'default' : 'outline'"
+              [attr.aria-pressed]="activePreset() === preset.label"
+              (click)="applyPreset(preset)"
+            >
+              {{ preset.label }}
+            </button>
+          }
+        </div>
+
+        <label class="effect">
+          <span class="effect-name">Vitesse</span>
+          <input type="range" min="0.5" max="1.5" step="0.05" [value]="speed()" (input)="setSpeed($event)" />
+          <span class="effect-value">{{ speed() | number: '1.2-2' }}×</span>
+        </label>
+
+        <label class="effect">
+          <span class="effect-name">Reverb</span>
+          <input type="range" min="0" max="1" step="0.05" [value]="reverb()" (input)="setReverb($event)" />
+          <span class="effect-value">{{ reverb() * 100 | number: '1.0-0' }} %</span>
+        </label>
+
+        <label class="pitch">
+          <input type="checkbox" [checked]="keepPitch()" (change)="setKeepPitch($event)" />
+          Conserver la tonalité
+        </label>
+      </div>
+
       @if (waveformPeaks().length) {
         <app-waveform [peaks]="waveformPeaks()" [progress]="progress()" [duration]="duration()" (seek)="seek($event)" />
         @if (waveformError()) {
@@ -90,6 +124,8 @@
         </div>
       }
     </div>
+
+    <app-remix-panel [track]="t" (started)="pause()" />
   }
 
   @if (audioUrl()) {

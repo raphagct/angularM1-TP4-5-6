@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { createApp } from "./app.js";
 import { User } from "./models/User.js";
+import { Track } from "./models/Track.js";
 
 // Le port et l'URI viennent de l'environnement du backend, jamais d'Angular.
 const port = process.env.PORT || 3000;
@@ -45,6 +46,21 @@ try {
   }
 } catch (error) {
   console.error("[startup] Impossible de préparer le compte de démonstration", error);
+  throw error;
+}
+
+try {
+  // Une séparation Demucs ne survit pas à un redémarrage : sans cette remise
+  // à zéro, la piste resterait bloquée en "processing".
+  const { modifiedCount } = await Track.updateMany(
+    { vocalsStatus: "processing" },
+    { $set: { vocalsStatus: "failed" } },
+  );
+  if (modifiedCount) {
+    console.warn(`[startup] ${modifiedCount} séparation(s) interrompue(s) marquée(s) en échec`);
+  }
+} catch (error) {
+  console.error("[startup] Impossible de remettre à zéro les séparations interrompues", error);
   throw error;
 }
 

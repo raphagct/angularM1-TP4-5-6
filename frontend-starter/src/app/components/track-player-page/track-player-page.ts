@@ -10,6 +10,7 @@ import {
   lucidePlay,
   lucideRotateCcw,
   lucideRotateCw,
+  lucideSparkles,
   lucideVolume2,
   lucideVolumeX,
 } from '@ng-icons/lucide';
@@ -17,13 +18,27 @@ import { Subscription } from 'rxjs';
 import { ZardButtonComponent } from '@/shared/components/button';
 import { TrackCoverComponent } from '@/shared/components/track-cover';
 import { WaveformComponent } from '@/shared/components/waveform';
+import { RemixPanelComponent } from '@/shared/components/remix-panel';
 import { DurationPipe } from '@/shared/pipes/duration.pipe';
 import { Track } from '@/shared/models/track.model';
 import { TrackService } from '@/shared/services/track.service';
 import { AudioAnalysisService } from '@/shared/services/audio-analysis.service';
+import { ReverbChain } from '@/shared/utils/audio-effects';
 
 /** Flat line used as a seek bar when the browser cannot decode the waveform. */
 const FALLBACK_PEAKS = new Array<number>(200).fill(0.06);
+
+export interface EffectPreset {
+  label: string;
+  speed: number;
+  reverb: number;
+}
+
+export const EFFECT_PRESETS: EffectPreset[] = [
+  { label: 'Original', speed: 1, reverb: 0 },
+  { label: 'Speed up', speed: 1.25, reverb: 0 },
+  { label: 'Slowed + reverb', speed: 0.85, reverb: 0.6 },
+];
 
 @Component({
   imports: [
@@ -34,6 +49,7 @@ const FALLBACK_PEAKS = new Array<number>(200).fill(0.06);
     ZardButtonComponent,
     TrackCoverComponent,
     WaveformComponent,
+    RemixPanelComponent,
     DurationPipe,
   ],
   templateUrl: './track-player-page.html',
@@ -45,6 +61,7 @@ const FALLBACK_PEAKS = new Array<number>(200).fill(0.06);
       lucidePlay,
       lucideRotateCcw,
       lucideRotateCw,
+      lucideSparkles,
       lucideVolume2,
       lucideVolumeX,
     }),
@@ -71,6 +88,17 @@ export class TrackPlayerPageComponent {
   readonly muted = signal(false);
   private readonly mediaDuration = signal(0);
 
+  readonly presets = EFFECT_PRESETS;
+  /** Playback rate between 0.5 and 1.5. */
+  readonly speed = signal(1);
+  /** When false, speeding up also raises the pitch ("nightcore" effect). */
+  readonly keepPitch = signal(false);
+  /** Reverb mix between 0 (none) and 1. */
+  readonly reverb = signal(0);
+  readonly activePreset = computed(
+    () => this.presets.find((p) => p.speed === this.speed() && p.reverb === this.reverb())?.label ?? null,
+  );
+
   /** The real media duration wins; the API metadata is used until it is known. */
   readonly duration = computed(() => this.mediaDuration() || this.track()?.duration || 0);
   readonly progress = computed(() => {
@@ -88,10 +116,13 @@ export class TrackPlayerPageComponent {
   readonly waveformPeaks = computed(() => (this.waveformError() ? FALLBACK_PEAKS : this.peaks()));
 
   private readonly audio = viewChild<ElementRef<HTMLAudioElement>>('audio');
+  private readonly remix = viewChild(RemixPanelComponent);
   private frame = 0;
   private requests = new Subscription();
   /** Incremented on each load so a late waveform result from a previous track is ignored. */
   private loadId = 0;
+  /** Created on demand: routing through Web Audio is only needed once reverb is used. */
+  private reverbChain: ReverbChain | null = null;
 
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed()).subscribe((params) => {
@@ -102,6 +133,7 @@ export class TrackPlayerPageComponent {
     inject(DestroyRef).onDestroy(() => {
       this.stopLoop();
       this.requests.unsubscribe();
+      this.closeReverb();
       this.setAudioUrl(null);
     });
   }
@@ -110,6 +142,8 @@ export class TrackPlayerPageComponent {
     this.requests.unsubscribe();
     this.requests = new Subscription();
     this.stopLoop();
+    // The <audio> element is recreated for the next track: its chain is obsolete.
+    this.closeReverb();
     this.setAudioUrl(null);
     const loadId = ++this.loadId;
     this.track.set(null);
@@ -176,6 +210,11 @@ export class TrackPlayerPageComponent {
     }
   }
 
+  /** Called when the remix starts: both players must not play at the same time. */
+  pause(): void {
+    this.audio()?.nativeElement.pause();
+  }
+
   /** Moves the playback to a position between 0 and 1. */
   seek(fraction: number): void {
     this.seekTo(fraction * this.duration());
@@ -216,9 +255,54 @@ export class TrackPlayerPageComponent {
   onLoadedMetadata(): void {
     const duration = this.audio()?.nativeElement.duration ?? 0;
     if (Number.isFinite(duration)) this.mediaDuration.set(duration);
+    this.applyEffects();
+  }
+
+  setSpeed(event: Event): void {
+    this.speed.set(Number((event.target as HTMLInputElement).value));
+    this.applyEffects();
+  }
+
+  setKeepPitch(event: Event): void {
+    this.keepPitch.set((event.target as HTMLInputElement).checked);
+    this.applyEffects();
+  }
+
+  setReverb(event: Event): void {
+    this.reverb.set(Number((event.target as HTMLInputElement).value));
+    this.applyEffects();
+  }
+
+  applyPreset(preset: EffectPreset): void {
+    this.speed.set(preset.speed);
+    this.reverb.set(preset.reverb);
+    this.applyEffects();
+  }
+
+  /** Applies speed, pitch and reverb to the current <audio> element. */
+  private applyEffects(): void {
+    const element = this.audio()?.nativeElement;
+    if (!element) return;
+    element.preservesPitch = this.keepPitch();
+    // defaultPlaybackRate survives a reload of the source, playbackRate does not.
+    element.defaultPlaybackRate = this.speed();
+    element.playbackRate = this.speed();
+
+    if (this.reverb() > 0 && this.reverbChain?.element !== element) {
+      if (typeof AudioContext === 'undefined') return;
+      this.closeReverb();
+      this.reverbChain = new ReverbChain(element);
+    }
+    this.reverbChain?.setMix(this.reverb());
+  }
+
+  private closeReverb(): void {
+    this.reverbChain?.close();
+    this.reverbChain = null;
   }
 
   onPlay(): void {
+    this.remix()?.pause();
     this.playing.set(true);
     this.startLoop();
   }

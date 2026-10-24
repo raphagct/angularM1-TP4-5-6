@@ -18,7 +18,11 @@ export interface Track {
   bitrate?: number;
   /** Sample rate in Hz. */
   sampleRate?: number;
+  /** Progress of the vocals extraction (Demucs) run by the API. */
+  vocalsStatus?: VocalsStatus;
 }
+
+export type VocalsStatus = 'none' | 'processing' | 'ready' | 'failed';
 
 /** Optional fields sent with an upload; the API falls back to the file tags. */
 export interface TrackUploadDetails {

@@ -31,6 +31,14 @@ const schema = new mongoose.Schema(
     // n'est jamais exposé. coverMimeType sert aussi à savoir si elle existe.
     coverFileId: { type: mongoose.Schema.Types.ObjectId, select: false },
     coverMimeType: { type: String },
+    // Voix isolée par Demucs (MP3), stockée dans GridFS. La séparation est
+    // asynchrone : vocalsStatus permet au frontend de suivre son avancement.
+    vocalsFileId: { type: mongoose.Schema.Types.ObjectId, select: false },
+    vocalsStatus: {
+      type: String,
+      enum: ["none", "processing", "ready", "failed"],
+      default: "none",
+    },
   },
   { timestamps: true },
 );
@@ -59,6 +67,8 @@ schema.statics.publicFrom = function (doc) {
     bitrate: doc.bitrate,
     sampleRate: doc.sampleRate,
     hasCover: Boolean(doc.coverMimeType),
+    // Les pistes créées avant la séparation n'ont pas encore ce champ.
+    vocalsStatus: doc.vocalsStatus || "none",
     createdAt: doc.createdAt,
   };
 };

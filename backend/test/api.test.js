@@ -23,8 +23,10 @@ const bearer = (sub = userId) => ({
   Authorization: `Bearer ${jwt.sign({ sub, email: "u@test.dev" }, SECRET, { expiresIn: "1h" })}`,
 });
 
-let server, base;
+let server, base, app;
 const storage = createMemoryStorage();
+// Remplace Demucs : chaque test choisit le résultat de la séparation.
+const separator = { vocals: async () => Buffer.from("voix") };
 
 /** Simule une requête Mongoose chaînable (select, sort, lean...) et awaitable. */
 function query(result) {
@@ -62,7 +64,8 @@ const post = (form, headers = bearer()) =>
   fetch(base + "/api/tracks", { method: "POST", headers, body: form });
 
 test.before(async () => {
-  server = createApp({ storage }).listen(0);
+  app = createApp({ storage, separator });
+  server = app.listen(0);
   await new Promise((r) => server.once("listening", r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -500,6 +503,15 @@ describe("DELETE /api/tracks/:id", () => {
     assert.equal(storage.files.size, 0);
   });
 
+  test("204 et suppression de la voix extraite", async () => {
+    const fileId = await seed("x");
+    const vocalsFileId = await seed("voix");
+    mock.method(Track, "findOneAndDelete", () => query({ id: trackId, fileId, vocalsFileId }));
+    const r = await fetch(`${base}/api/tracks/${trackId}`, { method: "DELETE", headers: bearer() });
+    assert.equal(r.status, 204);
+    assert.equal(storage.files.size, 0);
+  });
+
   test("204 pour une piste sans fichier GridFS (créée avant la migration)", async () => {
     mock.method(Track, "findOneAndDelete", () => query({ id: trackId }));
     const r = await fetch(`${base}/api/tracks/${trackId}`, { method: "DELETE", headers: bearer() });
@@ -519,6 +531,161 @@ describe("DELETE /api/tracks/:id", () => {
     let r = await fetch(`${base}/api/tracks/${trackId}`, { method: "DELETE", headers: bearer() });
     assert.equal(r.status, 404);
     r = await fetch(`${base}/api/tracks/nope`, { method: "DELETE", headers: bearer() });
+    assert.equal(r.status, 404);
+  });
+});
+
+describe("POST /api/tracks/:id/vocals", () => {
+  /** Piste Mongoose en cours de séparation, telle que renvoyée par findOneAndUpdate. */
+  const processingTrack = (fileId) =>
+    new Track({
+      _id: trackId,
+      ownerId: userId,
+      title: "One",
+      originalName: "one.mp3",
+      fileId,
+      mimeType: "audio/mpeg",
+      size: 10,
+      vocalsStatus: "processing",
+    });
+  /** Attend la fin des tâches de fond lancées par la route. */
+  const jobs = () => Promise.all(app.locals.vocalsJobs);
+
+  test("202 tout de suite, puis la voix est enregistrée et la piste passe à ready", async () => {
+    const fileId = await seed("mix");
+    const start = mock.method(Track, "findOneAndUpdate", () => query(processingTrack(fileId)));
+    const vocals = mock.method(separator, "vocals", async () => Buffer.from("voix"));
+
+    const r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "POST", headers: bearer() });
+    assert.equal(r.status, 202);
+    assert.equal((await r.json()).vocalsStatus, "processing");
+    // La première mise à jour ne vise que la piste de l'utilisateur, si elle n'est pas déjà traitée.
+    assert.deepEqual(start.mock.calls[0].arguments[0], {
+      _id: trackId,
+      ownerId: userId,
+      vocalsStatus: { $nin: ["processing", "ready"] },
+    });
+
+    await jobs();
+    assert.equal(vocals.mock.calls[0].arguments[0].toString(), "mix");
+    assert.equal(vocals.mock.calls[0].arguments[1], "audio/mpeg");
+    const [, ready] = start.mock.calls.map((call) => call.arguments[1].$set);
+    assert.equal(ready.vocalsStatus, "ready");
+    assert.equal(stored(ready.vocalsFileId).toString(), "voix");
+  });
+
+  test("passe à failed si Demucs échoue, sans fichier orphelin", async () => {
+    const fileId = await seed("mix");
+    mock.method(Track, "findOneAndUpdate", () => query(processingTrack(fileId)));
+    mock.method(separator, "vocals", async () => {
+      throw new Error("Demucs a échoué");
+    });
+    const failed = mock.method(Track, "updateOne", () => query({}));
+
+    const r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "POST", headers: bearer() });
+    assert.equal(r.status, 202);
+    await jobs();
+    assert.deepEqual(failed.mock.calls[0].arguments[1], { $set: { vocalsStatus: "failed" } });
+    assert.equal(storage.files.size, 1);
+  });
+
+  test("supprime la voix si la piste a été supprimée pendant la séparation", async () => {
+    const fileId = await seed("mix");
+    let calls = 0;
+    mock.method(Track, "findOneAndUpdate", () => query(calls++ === 0 ? processingTrack(fileId) : null));
+
+    await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "POST", headers: bearer() });
+    await jobs();
+    assert.deepEqual([...storage.files.keys()], [String(fileId)]);
+  });
+
+  test("409 si la séparation est déjà en cours ou terminée", async () => {
+    mock.method(Track, "findOneAndUpdate", () => query(null));
+    const findOne = mock.method(Track, "findOne", () => query({ id: trackId, vocalsStatus: "processing" }));
+    let r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "POST", headers: bearer() });
+    assert.equal(r.status, 409);
+    assert.equal((await r.json()).message, "Séparation déjà en cours");
+
+    findOne.mock.mockImplementation(() => query({ id: trackId, vocalsStatus: "ready" }));
+    r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "POST", headers: bearer() });
+    assert.equal(r.status, 409);
+    assert.equal((await r.json()).message, "La voix a déjà été extraite");
+    assert.equal(app.locals.vocalsJobs.size, 0);
+  });
+
+  test("404 si la piste est inconnue ou n'appartient pas à l'utilisateur", async () => {
+    mock.method(Track, "findOneAndUpdate", () => query(null));
+    const findOne = mock.method(Track, "findOne", () => query(null));
+    const r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "POST", headers: bearer() });
+    assert.equal(r.status, 404);
+    assert.deepEqual(findOne.mock.calls[0].arguments[0], { _id: trackId, ownerId: userId });
+  });
+
+  test("401 sans token et 404 pour un identifiant mal formé", async () => {
+    let r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "POST" });
+    assert.equal(r.status, 401);
+    r = await fetch(`${base}/api/tracks/nope/vocals`, { method: "POST", headers: bearer() });
+    assert.equal(r.status, 404);
+  });
+});
+
+describe("GET /api/tracks/:id/vocals", () => {
+  test("200 avec la voix en MP3", async () => {
+    const vocalsFileId = await seed("voix");
+    mock.method(Track, "findOne", () => query({ id: trackId, vocalsFileId }));
+    const r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { headers: bearer() });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("content-type"), "audio/mpeg");
+    assert.equal(Buffer.from(await r.arrayBuffer()).toString(), "voix");
+  });
+
+  test("206 pour une requête Range", async () => {
+    const vocalsFileId = await seed("voix isolée");
+    mock.method(Track, "findOne", () => query({ id: trackId, vocalsFileId }));
+    const r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { headers: { ...bearer(), Range: "bytes=0-3" } });
+    assert.equal(r.status, 206);
+    assert.equal(Buffer.from(await r.arrayBuffer()).toString(), "voix");
+  });
+
+  test("404 si la voix n'a pas été extraite ou si la piste est inconnue", async () => {
+    const findOne = mock.method(Track, "findOne", () => query({ id: trackId }));
+    let r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { headers: bearer() });
+    assert.equal(r.status, 404);
+    assert.equal((await r.json()).message, "Voix non extraite");
+
+    findOne.mock.mockImplementation(() => query(null));
+    r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { headers: bearer() });
+    assert.equal(r.status, 404);
+    assert.equal((await r.json()).message, "Piste inconnue");
+  });
+});
+
+describe("DELETE /api/tracks/:id/vocals", () => {
+  test("204, supprime le fichier et remet le statut à none", async () => {
+    const vocalsFileId = await seed("voix");
+    const update = mock.method(Track, "findOneAndUpdate", () => query({ id: trackId, vocalsFileId }));
+    const r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "DELETE", headers: bearer() });
+    assert.equal(r.status, 204);
+    assert.equal(storage.files.size, 0);
+    assert.deepEqual(update.mock.calls[0].arguments[0], {
+      _id: trackId,
+      ownerId: userId,
+      vocalsStatus: { $ne: "processing" },
+    });
+    assert.deepEqual(update.mock.calls[0].arguments[1], {
+      $set: { vocalsStatus: "none" },
+      $unset: { vocalsFileId: 1 },
+    });
+  });
+
+  test("409 pendant une séparation, 404 si la piste est inconnue", async () => {
+    mock.method(Track, "findOneAndUpdate", () => query(null));
+    const exists = mock.method(Track, "exists", () => query({ _id: trackId }));
+    let r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "DELETE", headers: bearer() });
+    assert.equal(r.status, 409);
+
+    exists.mock.mockImplementation(() => query(null));
+    r = await fetch(`${base}/api/tracks/${trackId}/vocals`, { method: "DELETE", headers: bearer() });
     assert.equal(r.status, 404);
   });
 });

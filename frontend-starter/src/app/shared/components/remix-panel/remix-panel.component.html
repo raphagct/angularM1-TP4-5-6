@@ -1,0 +1,135 @@
+<section class="remix" aria-labelledby="remix-title">
+  <header class="remix-header">
+    <h2 id="remix-title"><ng-icon name="lucideWandSparkles" /> Remix</h2>
+    <p class="hint">Isole la voix de ce son avec une IA, puis pose-la sur une autre prod de ta bibliothèque.</p>
+  </header>
+
+  @if (error()) {
+    <div class="error-box" role="alert">{{ error() }}</div>
+  }
+
+  @switch (status()) {
+    @case ('processing') {
+      <div class="processing" aria-live="polite">
+        <span class="pulse"></span>
+        Séparation en cours… compte 1 à 5 minutes. Tu peux quitter la page, elle continue sur le serveur.
+      </div>
+    }
+    @case ('ready') {
+      <div class="actions">
+        @if (vocalsUrl()) {
+          <a z-button zType="outline" zSize="sm" [href]="vocalsUrl()" [download]="downloadName()">
+            <ng-icon name="lucideDownload" /> Télécharger l’acapella
+          </a>
+        }
+        <button z-button zType="ghost" zSize="sm" (click)="deleteVocals()" [zLoading]="busy()">
+          <ng-icon name="lucideTrash2" /> Supprimer la voix
+        </button>
+      </div>
+
+      <label class="field">
+        <span class="field-name">Prod</span>
+        <select (change)="selectBeat($event)" [value]="beatId() ?? ''">
+          <option value="">Choisir une piste…</option>
+          @for (beat of beats(); track beat.id) {
+            <option [value]="beat.id">{{ beat.title }}{{ beat.artist ? ' — ' + beat.artist : '' }}</option>
+          }
+        </select>
+      </label>
+      @if (!beats().length) {
+        <p class="hint">Ajoute une autre piste à ta bibliothèque pour t’en servir comme prod.</p>
+      }
+
+      <div class="transport">
+        <button
+          z-button
+          zShape="circle"
+          zSize="icon-lg"
+          (click)="toggle()"
+          [zDisabled]="!ready()"
+          [attr.aria-label]="playing() ? 'Pause du remix' : 'Lire le remix'"
+        >
+          <ng-icon [name]="playing() ? 'lucidePause' : 'lucidePlay'" />
+        </button>
+        <input
+          class="position"
+          type="range"
+          min="0"
+          [max]="duration()"
+          step="0.1"
+          [value]="currentTime()"
+          (input)="seek($event)"
+          [disabled]="!ready()"
+          aria-label="Position dans le remix"
+        />
+        <span class="time">{{ currentTime() | duration }} / {{ duration() | duration }}</span>
+      </div>
+
+      <div class="mixer">
+        <label class="field">
+          <span class="field-name">Voix</span>
+          <input type="range" min="0" max="1" step="0.05" [value]="vocalsVolume()" (input)="setVocalsVolume($event)" />
+          <span class="field-value">{{ vocalsVolume() * 100 | number: '1.0-0' }} %</span>
+        </label>
+        <label class="field">
+          <span class="field-name">Prod</span>
+          <input type="range" min="0" max="1" step="0.05" [value]="beatVolume()" (input)="setBeatVolume($event)" />
+          <span class="field-value">{{ beatVolume() * 100 | number: '1.0-0' }} %</span>
+        </label>
+        <label class="field">
+          <span class="field-name">Tempo prod</span>
+          <input type="range" min="0.5" max="1.5" step="0.01" [value]="beatSpeed()" (input)="setBeatSpeed($event)" />
+          <span class="field-value">{{ beatSpeed() | number: '1.2-2' }}×</span>
+        </label>
+        <label class="field">
+          <span class="field-name">Début prod</span>
+          <input type="range" min="0" max="30" step="0.1" [value]="beatStart()" (input)="setBeatStart($event)" />
+          <span class="field-value">{{ beatStart() | number: '1.1-1' }} s</span>
+        </label>
+      </div>
+
+      <div class="save">
+        <label class="field">
+          <span class="field-name">Titre</span>
+          <input
+            class="title-input"
+            type="text"
+            maxlength="200"
+            [value]="remixTitle()"
+            [placeholder]="defaultTitle()"
+            (input)="setRemixTitle($event)"
+          />
+        </label>
+        <button z-button (click)="save()" [zDisabled]="!ready() || !!saving()" [zLoading]="!!saving()">
+          <ng-icon name="lucideLibrary" />
+          @switch (saving()) {
+            @case ('rendering') { Création du remix… }
+            @case ('uploading') { Envoi… }
+            @default { Ajouter à la bibliothèque }
+          }
+        </button>
+        @if (saved(); as remix) {
+          <a class="saved-link" [routerLink]="['/tracks', remix.id]">Écouter « {{ remix.title }} »</a>
+        }
+      </div>
+
+      @if (vocalsUrl()) {
+        <audio
+          #vocals
+          [src]="vocalsUrl()"
+          (loadedmetadata)="onVocalsMetadata()"
+          (timeupdate)="onTimeUpdate()"
+          (ended)="onEnded()"
+        ></audio>
+      }
+      @if (beatUrl()) {
+        <audio #beat [src]="beatUrl()" (loadedmetadata)="onBeatMetadata()"></audio>
+      }
+    }
+    @default {
+      <button z-button (click)="extract()" [zLoading]="busy()">
+        <ng-icon name="lucideMic" /> Extraire la voix (IA)
+      </button>
+    }
+  }
+</section>

@@ -50,4 +50,19 @@ export class TrackService {
   delete(id: string) {
     return this.http.delete(`/api/tracks/${id}`);
   }
+
+  /** Starts the vocals extraction; the API answers 202 and keeps working in the background. */
+  extractVocals(id: string) {
+    return this.http.post<Track>(`/api/tracks/${id}/vocals`, null);
+  }
+
+  vocals(id: string) {
+    return this.http.get(`/api/tracks/${id}/vocals`, {
+      responseType: 'blob',
+    });
+  }
+
+  deleteVocals(id: string) {
+    return this.http.delete(`/api/tracks/${id}/vocals`);
+  }
 }

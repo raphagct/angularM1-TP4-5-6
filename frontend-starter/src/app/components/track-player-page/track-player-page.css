@@ -113,6 +113,45 @@
 }
 .volume input { width: 96px; accent-color: oklch(0.75 0.2 145); }
 
+/* Effects */
+.effects {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid oklch(1 0 0 / 8%);
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+.effects-icon { color: oklch(0.75 0.2 145); font-size: 1.1rem; }
+
+.effect {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+}
+.effect-name { color: var(--muted-foreground); font-weight: 600; min-width: 3.5rem; }
+.effect input { width: 140px; accent-color: oklch(0.75 0.2 145); }
+.effect-value { min-width: 3rem; font-variant-numeric: tabular-nums; }
+
+.pitch {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.pitch input { accent-color: oklch(0.75 0.2 145); }
+
 .waveform-skeleton {
   display: grid;
   place-items: center;
@@ -156,5 +195,7 @@
   .hero-cover, .cover-skeleton { width: min(260px, 70vw); }
   .details { justify-content: center; }
   .player-card { padding: 1rem; }
+  .effect { width: 100%; }
+  .effect input { flex: 1; }
   .volume { margin-left: 0; width: 100%; justify-content: flex-end; }
 }
